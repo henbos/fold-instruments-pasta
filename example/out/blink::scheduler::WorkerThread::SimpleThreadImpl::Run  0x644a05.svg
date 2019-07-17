@@ -1,0 +1,1353 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="886" onload="init(evt)" viewBox="0 0 1200 886" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="886.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="869" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="869" > </text>
+<g id="frames">
+<g >
+<title>cc::PictureLayerTilingSet::CopyTilingsAndPropertiesFromPendingTwin(cc::PictureLayerTilingSet const*, scoped_refptr&lt;cc::RasterSource&gt;, cc::Region const&amp;) (1 samples, 2.78%)</title><rect x="600.0" y="421" width="32.8" height="15.0" fill="rgb(249,33,26)" rx="2" ry="2" />
+<text  x="603.00" y="431.5" >cc..</text>
+</g>
+<g >
+<title>cc::LayerTreeImpl::PushPropertiesTo(cc::LayerTreeImpl*) (1 samples, 2.78%)</title><rect x="534.4" y="485" width="32.8" height="15.0" fill="rgb(246,143,54)" rx="2" ry="2" />
+<text  x="537.44" y="495.5" >cc..</text>
+</g>
+<g >
+<title>cc::RasterTilePriorityQueueAll::Build(std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, cc::TreePriority) (1 samples, 2.78%)</title><rect x="305.0" y="453" width="32.8" height="15.0" fill="rgb(246,42,48)" rx="2" ry="2" />
+<text  x="308.00" y="463.5" >cc..</text>
+</g>
+<g >
+<title>base::WaitableEvent::TimedWaitUntil(base::TimeTicks const&amp;) (3 samples, 8.33%)</title><rect x="75.6" y="661" width="98.3" height="15.0" fill="rgb(243,199,0)" rx="2" ry="2" />
+<text  x="78.56" y="671.5" >base::Waita..</text>
+</g>
+<g >
+<title>cc::PropertyTrees::operator=(cc::PropertyTrees const&amp;) (2 samples, 5.56%)</title><rect x="665.6" y="533" width="65.5" height="15.0" fill="rgb(240,7,14)" rx="2" ry="2" />
+<text  x="668.56" y="543.5" >cc::Pro..</text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::Release() const (1 samples, 2.78%)</title><rect x="337.8" y="485" width="32.8" height="15.0" fill="rgb(223,73,40)" rx="2" ry="2" />
+<text  x="340.78" y="495.5" >ba..</text>
+</g>
+<g >
+<title>cc::PrioritizedTile::PrioritizedTile() (1 samples, 2.78%)</title><rect x="305.0" y="389" width="32.8" height="15.0" fill="rgb(211,14,9)" rx="2" ry="2" />
+<text  x="308.00" y="399.5" >cc..</text>
+</g>
+<g >
+<title>cc::mojo_embedder::AsyncLayerTreeFrameSink::OnBeginFrame(viz::BeginFrameArgs const&amp;, base::flat_map&lt;unsigned int, viz::FrameTimingDetails, std::__Cr::less&lt;void&gt; &gt; const&amp;) (4 samples, 11.11%)</title><rect x="862.2" y="421" width="131.1" height="15.0" fill="rgb(232,188,16)" rx="2" ry="2" />
+<text  x="865.22" y="431.5" >cc::mojo_embedde..</text>
+</g>
+<g >
+<title>cc::CompositorTimingHistory::WillBeginImplFrame(viz::BeginFrameArgs const&amp;, bool, base::TimeTicks) (1 samples, 2.78%)</title><rect x="862.2" y="325" width="32.8" height="15.0" fill="rgb(254,163,15)" rx="2" ry="2" />
+<text  x="865.22" y="335.5" >cc..</text>
+</g>
+<g >
+<title>mojo::Connector::DispatchMessage(mojo::Message) (1 samples, 2.78%)</title><rect x="206.7" y="597" width="32.7" height="15.0" fill="rgb(225,43,48)" rx="2" ry="2" />
+<text  x="209.67" y="607.5" >mo..</text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::InsertEndpointsForMessage(mojo::Message const&amp;) (1 samples, 2.78%)</title><rect x="829.4" y="501" width="32.8" height="15.0" fill="rgb(220,18,24)" rx="2" ry="2" />
+<text  x="832.44" y="511.5" >mo..</text>
+</g>
+<g >
+<title>cc::Scheduler::OnBeginImplFrameDeadline() (8 samples, 22.22%)</title><rect x="239.4" y="597" width="262.3" height="15.0" fill="rgb(224,113,51)" rx="2" ry="2" />
+<text  x="242.44" y="607.5" >cc::Scheduler::OnBeginImplFrameDead..</text>
+</g>
+<g >
+<title>mojo::Connector::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="272.2" y="437" width="32.8" height="15.0" fill="rgb(225,190,31)" rx="2" ry="2" />
+<text  x="275.22" y="447.5" >mo..</text>
+</g>
+<g >
+<title>cc::Scheduler::ScheduleBeginImplFrameDeadline() (1 samples, 2.78%)</title><rect x="895.0" y="309" width="32.8" height="15.0" fill="rgb(228,35,28)" rx="2" ry="2" />
+<text  x="898.00" y="319.5" >cc..</text>
+</g>
+<g >
+<title>cc::LayerTreeHost::FinishCommitOnImplThread(cc::LayerTreeHostImpl*) (2 samples, 5.56%)</title><rect x="665.6" y="565" width="65.5" height="15.0" fill="rgb(226,136,7)" rx="2" ry="2" />
+<text  x="668.56" y="575.5" >cc::Lay..</text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 2.78%)</title><rect x="239.4" y="485" width="32.8" height="15.0" fill="rgb(250,16,26)" rx="2" ry="2" />
+<text  x="242.44" y="495.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::ReloadEmptyImmediateWorkQueue() (1 samples, 2.78%)</title><rect x="1124.4" y="581" width="32.8" height="15.0" fill="rgb(215,178,10)" rx="2" ry="2" />
+<text  x="1127.44" y="591.5" >ba..</text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="960.6" y="293" width="32.7" height="15.0" fill="rgb(223,26,15)" rx="2" ry="2" />
+<text  x="963.56" y="303.5" >mo..</text>
+</g>
+<g >
+<title>cc::Scheduler::ProcessScheduledActions() (3 samples, 8.33%)</title><rect x="534.4" y="533" width="98.4" height="15.0" fill="rgb(254,40,42)" rx="2" ry="2" />
+<text  x="537.44" y="543.5" >cc::Schedul..</text>
+</g>
+<g >
+<title>cc::TileManager::FlushAndIssueSignals() (4 samples, 11.11%)</title><rect x="534.4" y="597" width="131.2" height="15.0" fill="rgb(218,73,10)" rx="2" ry="2" />
+<text  x="537.44" y="607.5" >cc::TileManager:..</text>
+</g>
+<g >
+<title>thread_start (36 samples, 100.00%)</title><rect x="10.0" y="805" width="1180.0" height="15.0" fill="rgb(226,149,30)" rx="2" ry="2" />
+<text  x="13.00" y="815.5" >thread_start</text>
+</g>
+<g >
+<title>mojo::Connector::DispatchMessage(mojo::Message) (6 samples, 16.67%)</title><rect x="829.4" y="549" width="196.7" height="15.0" fill="rgb(253,37,54)" rx="2" ry="2" />
+<text  x="832.44" y="559.5" >mojo::Connector::Dispatch..</text>
+</g>
+<g >
+<title>blink::scheduler::WorkerThread::SimpleThreadImpl::Run  0x644a05 (36 samples, 100.00%)</title><rect x="10.0" y="821" width="1180.0" height="15.0" fill="rgb(244,124,10)" rx="2" ry="2" />
+<text  x="13.00" y="831.5" >blink::scheduler::WorkerThread::SimpleThreadImpl::Run  0x644a05</text>
+</g>
+<g >
+<title>cc::TileManager::ScheduleTasks(cc::TileManager::PrioritizedWorkToSchedule) (1 samples, 2.78%)</title><rect x="337.8" y="517" width="32.8" height="15.0" fill="rgb(247,171,28)" rx="2" ry="2" />
+<text  x="340.78" y="527.5" >cc..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::UpdateRootLayerStateForSynchronousInputHandler() (1 samples, 2.78%)</title><rect x="927.8" y="277" width="32.8" height="15.0" fill="rgb(206,162,8)" rx="2" ry="2" />
+<text  x="930.78" y="287.5" >cc..</text>
+</g>
+<g >
+<title>mojo::internal::Serializer&lt;viz::mojom::RenderPassDataView, std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt; const&gt;::Serialize(std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt; const&amp;, mojo::internal::Buffer*, viz::mojom::internal::RenderPass_Data::BufferWriter*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="421" width="32.8" height="15.0" fill="rgb(212,106,17)" rx="2" ry="2" />
+<text  x="439.11" y="431.5" >mo..</text>
+</g>
+<g >
+<title>mojo::FilterChain::Accept(mojo::Message*) (6 samples, 16.67%)</title><rect x="829.4" y="533" width="196.7" height="15.0" fill="rgb(238,115,37)" rx="2" ry="2" />
+<text  x="832.44" y="543.5" >mojo::FilterChain::Accept..</text>
+</g>
+<g >
+<title>void base::internal::Invoker&lt;base::internal::BindState&lt;void (mojo::SimpleWatcher::*)(int, unsigned int, mojo::HandleSignalsState const&amp;), base::WeakPtr&lt;mojo::SimpleWatcher&gt;, int, unsigned int, mojo::HandleSignalsState&gt;, void ()&gt;::RunImpl&lt;void (mojo::SimpleWatcher::*)(int, unsigned int, mojo::HandleSignalsState const&amp;), std::__Cr::tuple&lt;base::WeakPtr&lt;mojo::SimpleWatcher&gt;, int, unsigned int, mojo::HandleSignalsState&gt;, 0ul, 1ul, 2ul, 3ul&gt;(void (mojo::SimpleWatcher::*&amp;&amp;)(int, unsigned int, mojo::HandleSignalsState const&amp;), std::__Cr::tuple&lt;base::WeakPtr&lt;mojo::SimpleWatcher&gt;, int, unsigned int, mojo::HandleSignalsState&gt;&amp;&amp;, std::__Cr::integer_sequence&lt;unsigned long, 0ul, 1ul, 2ul, 3ul&gt;) (7 samples, 19.44%)</title><rect x="829.4" y="629" width="229.5" height="15.0" fill="rgb(209,130,34)" rx="2" ry="2" />
+<text  x="832.44" y="639.5" >void base::internal::Invoker&lt;b..</text>
+</g>
+<g >
+<title>free (1 samples, 2.78%)</title><rect x="370.6" y="469" width="32.7" height="15.0" fill="rgb(229,179,19)" rx="2" ry="2" />
+<text  x="373.56" y="479.5" >free</text>
+</g>
+<g >
+<title>mojo::Message::CreateFromMessageHandle(mojo::ScopedHandleBase&lt;mojo::MessageHandle&gt;*) (1 samples, 2.78%)</title><rect x="1026.1" y="533" width="32.8" height="15.0" fill="rgb(236,60,5)" rx="2" ry="2" />
+<text  x="1029.11" y="543.5" >mo..</text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="272.2" y="469" width="32.8" height="15.0" fill="rgb(245,186,26)" rx="2" ry="2" />
+<text  x="275.22" y="479.5" >mo..</text>
+</g>
+<g >
+<title>cc::ProxyImpl::ScheduledActionActivateSyncTree() (3 samples, 8.33%)</title><rect x="534.4" y="517" width="98.4" height="15.0" fill="rgb(231,127,20)" rx="2" ry="2" />
+<text  x="537.44" y="527.5" >cc::ProxyIm..</text>
+</g>
+<g >
+<title>mojo::Connector::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="403.3" y="437" width="32.8" height="15.0" fill="rgb(254,78,51)" rx="2" ry="2" />
+<text  x="406.33" y="447.5" >mo..</text>
+</g>
+<g >
+<title>MojoWriteMessage (1 samples, 2.78%)</title><rect x="960.6" y="245" width="32.7" height="15.0" fill="rgb(216,81,11)" rx="2" ry="2" />
+<text  x="963.56" y="255.5" >Mo..</text>
+</g>
+<g >
+<title>cc::TileManager::AssignGpuMemoryToTiles() (1 samples, 2.78%)</title><rect x="305.0" y="517" width="32.8" height="15.0" fill="rgb(221,108,41)" rx="2" ry="2" />
+<text  x="308.00" y="527.5" >cc..</text>
+</g>
+<g >
+<title>viz::BeginFrameObserverBase::OnBeginFrame(viz::BeginFrameArgs const&amp;) (4 samples, 11.11%)</title><rect x="862.2" y="389" width="131.1" height="15.0" fill="rgb(212,15,52)" rx="2" ry="2" />
+<text  x="865.22" y="399.5" >viz::BeginFrameO..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::DelayedIncomingQueue::pop() (1 samples, 2.78%)</title><rect x="1157.2" y="549" width="32.8" height="15.0" fill="rgb(252,198,24)" rx="2" ry="2" />
+<text  x="1160.22" y="559.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::DidRunTask() (2 samples, 5.56%)</title><rect x="1058.9" y="645" width="65.5" height="15.0" fill="rgb(221,133,22)" rx="2" ry="2" />
+<text  x="1061.89" y="655.5" >base::s..</text>
+</g>
+<g >
+<title>-[NSAutoreleasePool drain] (1 samples, 2.78%)</title><rect x="42.8" y="677" width="32.8" height="15.0" fill="rgb(249,41,37)" rx="2" ry="2" />
+<text  x="45.78" y="687.5" >-[..</text>
+</g>
+<g >
+<title>mojo::internal::Serializer&lt;viz::mojom::DrawQuadDataView, mojo::DrawQuadWithSharedQuadState&gt;::Serialize(mojo::DrawQuadWithSharedQuadState&amp;, mojo::internal::Buffer*, viz::mojom::internal::DrawQuad_Data::BufferWriter*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="373" width="32.8" height="15.0" fill="rgb(241,169,39)" rx="2" ry="2" />
+<text  x="439.11" y="383.5" >mo..</text>
+</g>
+<g >
+<title>mojo::Connector::OnHandleReadyInternal(unsigned int) (7 samples, 19.44%)</title><rect x="829.4" y="581" width="229.5" height="15.0" fill="rgb(236,180,32)" rx="2" ry="2" />
+<text  x="832.44" y="591.5" >mojo::Connector::OnHandleReady..</text>
+</g>
+<g >
+<title>cc::RasterTilePriorityQueue::Create(std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, cc::TreePriority, cc::RasterTilePriorityQueue::Type) (2 samples, 5.56%)</title><rect x="731.1" y="437" width="65.6" height="15.0" fill="rgb(243,214,0)" rx="2" ry="2" />
+<text  x="734.11" y="447.5" >cc::Ras..</text>
+</g>
+<g >
+<title>mojo::MessageHandle::Close() (1 samples, 2.78%)</title><rect x="993.3" y="485" width="32.8" height="15.0" fill="rgb(237,167,15)" rx="2" ry="2" />
+<text  x="996.33" y="495.5" >mo..</text>
+</g>
+<g >
+<title>cc::Scheduler::ProcessScheduledActions() (2 samples, 5.56%)</title><rect x="239.4" y="565" width="65.6" height="15.0" fill="rgb(251,164,2)" rx="2" ry="2" />
+<text  x="242.44" y="575.5" >cc::Sch..</text>
+</g>
+<g >
+<title>viz::CompositorFrameMetadata::~CompositorFrameMetadata() (1 samples, 2.78%)</title><rect x="370.6" y="485" width="32.7" height="15.0" fill="rgb(207,94,30)" rx="2" ry="2" />
+<text  x="373.56" y="495.5" >vi..</text>
+</g>
+<g >
+<title>cc::ProxyImpl::NotifyReadyToCommitOnImpl(cc::CompletionEvent*, cc::LayerTreeHost*, base::TimeTicks, bool) (5 samples, 13.89%)</title><rect x="665.6" y="629" width="163.8" height="15.0" fill="rgb(226,49,26)" rx="2" ry="2" />
+<text  x="668.56" y="639.5" >cc::ProxyImpl::Notify..</text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (cc::UniqueNotifier::*)(), base::WeakPtr&lt;cc::UniqueNotifier&gt; &gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (4 samples, 11.11%)</title><rect x="534.4" y="629" width="131.2" height="15.0" fill="rgb(222,220,17)" rx="2" ry="2" />
+<text  x="537.44" y="639.5" >base::internal::..</text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::InterfaceEndpoint::SendMessage(mojo::Message*) (1 samples, 2.78%)</title><rect x="272.2" y="453" width="32.8" height="15.0" fill="rgb(213,220,12)" rx="2" ry="2" />
+<text  x="275.22" y="463.5" >mo..</text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="206.7" y="565" width="32.7" height="15.0" fill="rgb(205,39,26)" rx="2" ry="2" />
+<text  x="209.67" y="575.5" >mo..</text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 2.78%)</title><rect x="501.7" y="597" width="32.7" height="15.0" fill="rgb(231,10,31)" rx="2" ry="2" />
+<text  x="504.67" y="607.5" >ba..</text>
+</g>
+<g >
+<title>cc::AppendQuadsData::~AppendQuadsData() (1 samples, 2.78%)</title><rect x="468.9" y="485" width="32.8" height="15.0" fill="rgb(219,13,44)" rx="2" ry="2" />
+<text  x="471.89" y="495.5" >cc..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::MoveReadyDelayedTasksToWorkQueue(base::sequence_manager::LazyNow*) (1 samples, 2.78%)</title><rect x="1157.2" y="565" width="32.8" height="15.0" fill="rgb(209,53,52)" rx="2" ry="2" />
+<text  x="1160.22" y="575.5" >ba..</text>
+</g>
+<g >
+<title>viz::mojom::CompositorFrameSinkClientRequestValidator::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="206.7" y="501" width="32.7" height="15.0" fill="rgb(210,203,28)" rx="2" ry="2" />
+<text  x="209.67" y="511.5" >vi..</text>
+</g>
+<g >
+<title>non-virtual thunk to cc::ProxyImpl::DidNotProduceFrame(viz::BeginFrameAck const&amp;) (1 samples, 2.78%)</title><rect x="960.6" y="341" width="32.7" height="15.0" fill="rgb(208,166,14)" rx="2" ry="2" />
+<text  x="963.56" y="351.5" >no..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::Run(bool, base::TimeDelta) (36 samples, 100.00%)</title><rect x="10.0" y="709" width="1180.0" height="15.0" fill="rgb(247,117,39)" rx="2" ry="2" />
+<text  x="13.00" y="719.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::Run(bool, base::TimeDelta)</text>
+</g>
+<g >
+<title>cc::PendingTreeDurationHistogramTimer::~PendingTreeDurationHistogramTimer() (1 samples, 2.78%)</title><rect x="567.2" y="485" width="32.8" height="15.0" fill="rgb(249,70,23)" rx="2" ry="2" />
+<text  x="570.22" y="495.5" >cc..</text>
+</g>
+<g >
+<title>malloc (1 samples, 2.78%)</title><rect x="239.4" y="453" width="32.8" height="15.0" fill="rgb(248,220,37)" rx="2" ry="2" />
+<text  x="242.44" y="463.5" >ma..</text>
+</g>
+<g >
+<title>blink::scheduler::WorkerThread::SimpleThreadImpl::Run() (36 samples, 100.00%)</title><rect x="10.0" y="741" width="1180.0" height="15.0" fill="rgb(227,107,50)" rx="2" ry="2" />
+<text  x="13.00" y="751.5" >blink::scheduler::WorkerThread::SimpleThreadImpl::Run()</text>
+</g>
+<g >
+<title>base::internal::WeakReference::~WeakReference() (1 samples, 2.78%)</title><rect x="337.8" y="501" width="32.8" height="15.0" fill="rgb(244,116,10)" rx="2" ry="2" />
+<text  x="340.78" y="511.5" >ba..</text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_wake (1 samples, 2.78%)</title><rect x="960.6" y="53" width="32.7" height="15.0" fill="rgb(229,174,12)" rx="2" ry="2" />
+<text  x="963.56" y="63.5" >_p..</text>
+</g>
+<g >
+<title>base::WaitableEvent::Wait() (3 samples, 8.33%)</title><rect x="75.6" y="677" width="98.3" height="15.0" fill="rgb(250,195,0)" rx="2" ry="2" />
+<text  x="78.56" y="687.5" >base::Waita..</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 2.78%)</title><rect x="403.3" y="357" width="32.8" height="15.0" fill="rgb(216,33,18)" rx="2" ry="2" />
+<text  x="406.33" y="367.5" >mo..</text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 2.78%)</title><rect x="403.3" y="373" width="32.8" height="15.0" fill="rgb(243,86,0)" rx="2" ry="2" />
+<text  x="406.33" y="383.5" >mo..</text>
+</g>
+<g >
+<title>mojo::Connector::ReadAllAvailableMessages() (7 samples, 19.44%)</title><rect x="829.4" y="565" width="229.5" height="15.0" fill="rgb(233,90,34)" rx="2" ry="2" />
+<text  x="832.44" y="575.5" >mojo::Connector::ReadAllAvaila..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::AtomicFlagSet::RunActiveCallbacks() const (1 samples, 2.78%)</title><rect x="1124.4" y="597" width="32.8" height="15.0" fill="rgb(233,58,13)" rx="2" ry="2" />
+<text  x="1127.44" y="607.5" >ba..</text>
+</g>
+<g >
+<title>cc::EffectTree::operator=(cc::EffectTree const&amp;) (1 samples, 2.78%)</title><rect x="665.6" y="517" width="32.7" height="15.0" fill="rgb(222,105,15)" rx="2" ry="2" />
+<text  x="668.56" y="527.5" >cc..</text>
+</g>
+<g >
+<title>mojo::Connector::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="960.6" y="261" width="32.7" height="15.0" fill="rgb(213,70,25)" rx="2" ry="2" />
+<text  x="963.56" y="271.5" >mo..</text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_unlock_slow (1 samples, 2.78%)</title><rect x="960.6" y="69" width="32.7" height="15.0" fill="rgb(220,187,26)" rx="2" ry="2" />
+<text  x="963.56" y="79.5" >_p..</text>
+</g>
+<g >
+<title>cc::Scheduler::NotifyReadyToCommit() (5 samples, 13.89%)</title><rect x="665.6" y="613" width="163.8" height="15.0" fill="rgb(224,21,31)" rx="2" ry="2" />
+<text  x="668.56" y="623.5" >cc::Scheduler::Notify..</text>
+</g>
+<g >
+<title>cc::mojo_embedder::AsyncLayerTreeFrameSink::DidNotProduceFrame(viz::BeginFrameAck const&amp;) (1 samples, 2.78%)</title><rect x="960.6" y="325" width="32.7" height="15.0" fill="rgb(216,192,14)" rx="2" ry="2" />
+<text  x="963.56" y="335.5" >cc..</text>
+</g>
+<g >
+<title>mojo::internal::ArrayIterator&lt;mojo::ArrayTraits&lt;SkMatrix44&gt;, SkMatrix44 const, false&gt;::GetNext() (1 samples, 2.78%)</title><rect x="436.1" y="293" width="32.8" height="15.0" fill="rgb(227,146,36)" rx="2" ry="2" />
+<text  x="439.11" y="303.5" >mo..</text>
+</g>
+<g >
+<title>base::(anonymous namespace)::ThreadFunc(void*) (36 samples, 100.00%)</title><rect x="10.0" y="757" width="1180.0" height="15.0" fill="rgb(236,24,17)" rx="2" ry="2" />
+<text  x="13.00" y="767.5" >base::(anonymous namespace)::ThreadFunc(void*)</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::PrepareTiles() (2 samples, 5.56%)</title><rect x="305.0" y="549" width="65.6" height="15.0" fill="rgb(211,133,20)" rx="2" ry="2" />
+<text  x="308.00" y="559.5" >cc::Lay..</text>
+</g>
+<g >
+<title>viz::mojom::CompositorFrameSinkClientStubDispatch::Accept(viz::mojom::CompositorFrameSinkClient*, mojo::Message*) (4 samples, 11.11%)</title><rect x="862.2" y="437" width="131.1" height="15.0" fill="rgb(252,34,29)" rx="2" ry="2" />
+<text  x="865.22" y="447.5" >viz::mojom::Comp..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_0::__invoke(_malloc_zone_t*, void const*) (1 samples, 2.78%)</title><rect x="370.6" y="453" width="32.7" height="15.0" fill="rgb(227,40,1)" rx="2" ry="2" />
+<text  x="373.56" y="463.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::TimeDomain::MoveReadyDelayedTasksToWorkQueues(base::sequence_manager::LazyNow*) (1 samples, 2.78%)</title><rect x="1157.2" y="581" width="32.8" height="15.0" fill="rgb(209,91,30)" rx="2" ry="2" />
+<text  x="1160.22" y="591.5" >ba..</text>
+</g>
+<g >
+<title>base::internal::WeakReference::IsValid() const (1 samples, 2.78%)</title><rect x="501.7" y="613" width="32.7" height="15.0" fill="rgb(215,132,30)" rx="2" ry="2" />
+<text  x="504.67" y="623.5" >ba..</text>
+</g>
+<g >
+<title>std::__Cr::vector&lt;mojo::core::ports::PortRef const*, base::StackAllocator&lt;mojo::core::ports::PortRef const*, 5ul&gt; &gt;::__append(unsigned long) (1 samples, 2.78%)</title><rect x="403.3" y="309" width="32.8" height="15.0" fill="rgb(250,115,48)" rx="2" ry="2" />
+<text  x="406.33" y="319.5" >st..</text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 2.78%)</title><rect x="960.6" y="197" width="32.7" height="15.0" fill="rgb(226,34,36)" rx="2" ry="2" />
+<text  x="963.56" y="207.5" >mo..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 2.78%)</title><rect x="1091.7" y="581" width="32.7" height="15.0" fill="rgb(245,49,20)" rx="2" ry="2" />
+<text  x="1094.67" y="591.5" >ba..</text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (cc::TileManager::*)(), base::WeakPtr&lt;cc::TileManager&gt; &gt;, void ()&gt;::Run(base::internal::BindStateBase*) (1 samples, 2.78%)</title><rect x="501.7" y="629" width="32.7" height="15.0" fill="rgb(254,190,33)" rx="2" ry="2" />
+<text  x="504.67" y="639.5" >ba..</text>
+</g>
+<g >
+<title>mojo::internal::ArraySerializer&lt;mojo::ArrayDataView&lt;viz::mojom::RenderPassDataView&gt;, std::__Cr::vector&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt;, std::__Cr::allocator&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt; &gt; &gt; const, mojo::internal::ArrayIterator&lt;mojo::ArrayTraits&lt;std::__Cr::vector&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt;, std::__Cr::allocator&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt; &gt; &gt; &gt;, std::__Cr::vector&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt;, std::__Cr::allocator&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt; &gt; &gt; const, false&gt;, void&gt;::SerializeElements(mojo::internal::ArrayIterator&lt;mojo::ArrayTraits&lt;std::__Cr::vector&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt;, std::__Cr::allocator&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt; &gt; &gt; &gt;, std::__Cr::vector&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt;, std::__Cr::allocator&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt; &gt; &gt; const, false&gt;*, mojo::internal::Buffer*, mojo::internal::Array_Data&lt;mojo::internal::Pointer&lt;viz::mojom::internal::RenderPass_Data&gt; &gt;::BufferWriter*, mojo::internal::ContainerValidateParams const*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="437" width="32.8" height="15.0" fill="rgb(232,157,19)" rx="2" ry="2" />
+<text  x="439.11" y="447.5" >mo..</text>
+</g>
+<g >
+<title>mojo::internal::Serializer&lt;gfx::mojom::TransformDataView, gfx::Transform const&gt;::Serialize(gfx::Transform const&amp;, mojo::internal::Buffer*, gfx::mojom::internal::Transform_Data::BufferWriter*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="341" width="32.8" height="15.0" fill="rgb(224,162,14)" rx="2" ry="2" />
+<text  x="439.11" y="351.5" >mo..</text>
+</g>
+<g >
+<title>cc::RasterTilePriorityQueueAll::Build(std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, cc::TreePriority) (2 samples, 5.56%)</title><rect x="731.1" y="421" width="65.6" height="15.0" fill="rgb(226,161,33)" rx="2" ry="2" />
+<text  x="734.11" y="431.5" >cc::Ras..</text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::Accept(mojo::Message*) (6 samples, 16.67%)</title><rect x="829.4" y="517" width="196.7" height="15.0" fill="rgb(239,182,11)" rx="2" ry="2" />
+<text  x="832.44" y="527.5" >mojo::internal::Multiplex..</text>
+</g>
+<g >
+<title>cc::Scheduler::DrawIfPossible() (4 samples, 11.11%)</title><rect x="370.6" y="565" width="131.1" height="15.0" fill="rgb(247,153,8)" rx="2" ry="2" />
+<text  x="373.56" y="575.5" >cc::Scheduler::D..</text>
+</g>
+<g >
+<title>base::HistogramBase::CheckName(base::BasicStringPiece&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt; const&amp;) const (1 samples, 2.78%)</title><rect x="567.2" y="469" width="32.8" height="15.0" fill="rgb(231,67,52)" rx="2" ry="2" />
+<text  x="570.22" y="479.5" >ba..</text>
+</g>
+<g >
+<title>MojoWriteMessage (1 samples, 2.78%)</title><rect x="403.3" y="421" width="32.8" height="15.0" fill="rgb(223,86,18)" rx="2" ry="2" />
+<text  x="406.33" y="431.5" >Mo..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::CommitComplete() (3 samples, 8.33%)</title><rect x="731.1" y="565" width="98.3" height="15.0" fill="rgb(252,114,53)" rx="2" ry="2" />
+<text  x="734.11" y="575.5" >cc::LayerTr..</text>
+</g>
+<g >
+<title>cc::(anonymous namespace)::RendererUMAReporter::AddBeginImplFrameLatency(base::TimeDelta) (1 samples, 2.78%)</title><rect x="862.2" y="309" width="32.8" height="15.0" fill="rgb(218,183,49)" rx="2" ry="2" />
+<text  x="865.22" y="319.5" >cc..</text>
+</g>
+<g >
+<title>mojo::FilterChain::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="206.7" y="517" width="32.7" height="15.0" fill="rgb(253,101,0)" rx="2" ry="2" />
+<text  x="209.67" y="527.5" >mo..</text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::HandleValidatedMessage(mojo::Message*) (4 samples, 11.11%)</title><rect x="862.2" y="453" width="131.1" height="15.0" fill="rgb(246,149,16)" rx="2" ry="2" />
+<text  x="865.22" y="463.5" >mojo::InterfaceE..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::TakeTaskImpl() (2 samples, 5.56%)</title><rect x="1124.4" y="613" width="65.6" height="15.0" fill="rgb(230,132,10)" rx="2" ry="2" />
+<text  x="1127.44" y="623.5" >base::s..</text>
+</g>
+<g >
+<title>cc::mojo_embedder::AsyncLayerTreeFrameSink::SubmitCompositorFrame(viz::CompositorFrame, bool, bool) (3 samples, 8.33%)</title><rect x="370.6" y="501" width="98.3" height="15.0" fill="rgb(250,4,5)" rx="2" ry="2" />
+<text  x="373.56" y="511.5" >cc::mojo_em..</text>
+</g>
+<g >
+<title>mojo::Connector::DispatchNextMessageInQueue() (1 samples, 2.78%)</title><rect x="206.7" y="613" width="32.7" height="15.0" fill="rgb(208,137,45)" rx="2" ry="2" />
+<text  x="209.67" y="623.5" >mo..</text>
+</g>
+<g >
+<title>cc::PictureLayerImpl::CanHaveTilings() const (1 samples, 2.78%)</title><rect x="796.7" y="501" width="32.7" height="15.0" fill="rgb(224,105,46)" rx="2" ry="2" />
+<text  x="799.67" y="511.5" >cc..</text>
+</g>
+<g >
+<title>free (1 samples, 2.78%)</title><rect x="632.8" y="549" width="32.8" height="15.0" fill="rgb(206,28,40)" rx="2" ry="2" />
+<text  x="635.78" y="559.5" >free</text>
+</g>
+<g >
+<title>tiny_size (1 samples, 2.78%)</title><rect x="632.8" y="533" width="32.8" height="15.0" fill="rgb(208,15,19)" rx="2" ry="2" />
+<text  x="635.78" y="543.5" >ti..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::NotifyPendingTreeFullyPainted() (2 samples, 5.56%)</title><rect x="731.1" y="533" width="65.6" height="15.0" fill="rgb(209,134,16)" rx="2" ry="2" />
+<text  x="734.11" y="543.5" >cc::Lay..</text>
+</g>
+<g >
+<title>viz::mojom::CompositorFrameSinkProxy::DidNotProduceFrame(viz::BeginFrameAck const&amp;) (1 samples, 2.78%)</title><rect x="272.2" y="485" width="32.8" height="15.0" fill="rgb(230,15,33)" rx="2" ry="2" />
+<text  x="275.22" y="495.5" >vi..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::ActivateSyncTree() (3 samples, 8.33%)</title><rect x="534.4" y="501" width="98.4" height="15.0" fill="rgb(234,119,35)" rx="2" ry="2" />
+<text  x="537.44" y="511.5" >cc::LayerTr..</text>
+</g>
+<g >
+<title>base::internal::LockImpl::~LockImpl() (1 samples, 2.78%)</title><rect x="1157.2" y="469" width="32.8" height="15.0" fill="rgb(216,228,4)" rx="2" ry="2" />
+<text  x="1160.22" y="479.5" >ba..</text>
+</g>
+<g >
+<title>mojo::core::Core::WriteMessage(unsigned int, unsigned long, MojoWriteMessageOptions const*) (1 samples, 2.78%)</title><rect x="272.2" y="405" width="32.8" height="15.0" fill="rgb(248,169,17)" rx="2" ry="2" />
+<text  x="275.22" y="415.5" >mo..</text>
+</g>
+<g >
+<title>base::RunLoop::RunWithTimeout(base::TimeDelta) (36 samples, 100.00%)</title><rect x="10.0" y="725" width="1180.0" height="15.0" fill="rgb(226,220,9)" rx="2" ry="2" />
+<text  x="13.00" y="735.5" >base::RunLoop::RunWithTimeout(base::TimeDelta)</text>
+</g>
+<g >
+<title>cc::TileTaskManagerImpl::CheckForCompletedTasks() (1 samples, 2.78%)</title><rect x="632.8" y="581" width="32.8" height="15.0" fill="rgb(240,127,23)" rx="2" ry="2" />
+<text  x="635.78" y="591.5" >cc..</text>
+</g>
+<g >
+<title>_pthread_start (36 samples, 100.00%)</title><rect x="10.0" y="789" width="1180.0" height="15.0" fill="rgb(248,55,25)" rx="2" ry="2" />
+<text  x="13.00" y="799.5" >_pthread_start</text>
+</g>
+<g >
+<title>cc::(anonymous namespace)::CreateTilingSetRasterQueues(std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, cc::TreePriority, std::__Cr::vector&lt;std::__Cr::unique_ptr&lt;cc::TilingSetRasterQueueAll, std::__Cr::default_delete&lt;cc::TilingSetRasterQueueAll&gt; &gt;, std::__Cr::allocator&lt;std::__Cr::unique_ptr&lt;cc::TilingSetRasterQueueAll, std::__Cr::default_delete&lt;cc::TilingSetRasterQueueAll&gt; &gt; &gt; &gt;*) (2 samples, 5.56%)</title><rect x="731.1" y="405" width="65.6" height="15.0" fill="rgb(224,183,9)" rx="2" ry="2" />
+<text  x="734.11" y="415.5" >cc::(an..</text>
+</g>
+<g >
+<title>cc::PictureLayerImpl::UpdateTiles() (1 samples, 2.78%)</title><rect x="796.7" y="517" width="32.7" height="15.0" fill="rgb(231,143,51)" rx="2" ry="2" />
+<text  x="799.67" y="527.5" >cc..</text>
+</g>
+<g >
+<title>cc::ProxyImpl::ScheduledActionDrawIfPossible() (4 samples, 11.11%)</title><rect x="370.6" y="549" width="131.1" height="15.0" fill="rgb(210,25,35)" rx="2" ry="2" />
+<text  x="373.56" y="559.5" >cc::ProxyImpl::S..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::MoveReadyDelayedTasksToWorkQueues(base::sequence_manager::LazyNow*) (1 samples, 2.78%)</title><rect x="1157.2" y="597" width="32.8" height="15.0" fill="rgb(234,123,50)" rx="2" ry="2" />
+<text  x="1160.22" y="607.5" >ba..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::BuildRasterQueue(cc::TreePriority, cc::RasterTilePriorityQueue::Type) (1 samples, 2.78%)</title><rect x="305.0" y="485" width="32.8" height="15.0" fill="rgb(237,218,42)" rx="2" ry="2" />
+<text  x="308.00" y="495.5" >cc..</text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::WriteMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 2.78%)</title><rect x="960.6" y="213" width="32.7" height="15.0" fill="rgb(215,126,21)" rx="2" ry="2" />
+<text  x="963.56" y="223.5" >mo..</text>
+</g>
+<g >
+<title>gfx::SizeF::Enlarge(float, float) (1 samples, 2.78%)</title><rect x="927.8" y="213" width="32.8" height="15.0" fill="rgb(230,224,25)" rx="2" ry="2" />
+<text  x="930.78" y="223.5" >gf..</text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="403.3" y="469" width="32.8" height="15.0" fill="rgb(208,121,38)" rx="2" ry="2" />
+<text  x="406.33" y="479.5" >mo..</text>
+</g>
+<g >
+<title>base::internal::WeakPtrBase::~WeakPtrBase() (1 samples, 2.78%)</title><rect x="1157.2" y="517" width="32.8" height="15.0" fill="rgb(213,225,11)" rx="2" ry="2" />
+<text  x="1160.22" y="527.5" >ba..</text>
+</g>
+<g >
+<title>cc::Scheduler::BeginImplFrameWithDeadline(viz::BeginFrameArgs const&amp;) (4 samples, 11.11%)</title><rect x="862.2" y="357" width="131.1" height="15.0" fill="rgb(253,223,23)" rx="2" ry="2" />
+<text  x="865.22" y="367.5" >cc::Scheduler::B..</text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::InterfaceEndpoint::SendMessage(mojo::Message*) (1 samples, 2.78%)</title><rect x="403.3" y="453" width="32.8" height="15.0" fill="rgb(223,57,24)" rx="2" ry="2" />
+<text  x="406.33" y="463.5" >mo..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoWorkImpl(base::sequence_manager::LazyNow*, bool*) (31 samples, 86.11%)</title><rect x="173.9" y="661" width="1016.1" height="15.0" fill="rgb(221,24,14)" rx="2" ry="2" />
+<text  x="176.89" y="671.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoWorkImpl(base::sequence_manager::LazyNow*, bool*)</text>
+</g>
+<g >
+<title>non-virtual thunk to base::sequence_manager::internal::SequenceManagerImpl::TakeTask() (2 samples, 5.56%)</title><rect x="1124.4" y="645" width="65.6" height="15.0" fill="rgb(249,226,39)" rx="2" ry="2" />
+<text  x="1127.44" y="655.5" >non-vir..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::NotifyDidProcessTask(base::PendingTask const&amp;) (1 samples, 2.78%)</title><rect x="1091.7" y="613" width="32.7" height="15.0" fill="rgb(232,65,6)" rx="2" ry="2" />
+<text  x="1094.67" y="623.5" >ba..</text>
+</g>
+<g >
+<title>base::Lock::~Lock() (1 samples, 2.78%)</title><rect x="1157.2" y="485" width="32.8" height="15.0" fill="rgb(216,185,53)" rx="2" ry="2" />
+<text  x="1160.22" y="495.5" >ba..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::PrepareTiles() (2 samples, 5.56%)</title><rect x="731.1" y="517" width="65.6" height="15.0" fill="rgb(219,54,28)" rx="2" ry="2" />
+<text  x="734.11" y="527.5" >cc::Lay..</text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::ProcessIncomingMessage(mojo::internal::MultiplexRouter::MessageWrapper*, mojo::internal::MultiplexRouter::ClientCallBehavior, base::SequencedTaskRunner*) (1 samples, 2.78%)</title><rect x="206.7" y="549" width="32.7" height="15.0" fill="rgb(210,103,43)" rx="2" ry="2" />
+<text  x="209.67" y="559.5" >mo..</text>
+</g>
+<g >
+<title>base::internal::LockImpl::Unlock() (1 samples, 2.78%)</title><rect x="960.6" y="85" width="32.7" height="15.0" fill="rgb(222,122,21)" rx="2" ry="2" />
+<text  x="963.56" y="95.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::TakeTask() (2 samples, 5.56%)</title><rect x="1124.4" y="629" width="65.6" height="15.0" fill="rgb(220,24,49)" rx="2" ry="2" />
+<text  x="1127.44" y="639.5" >base::s..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::AnimateInternal() (1 samples, 2.78%)</title><rect x="927.8" y="293" width="32.8" height="15.0" fill="rgb(231,101,13)" rx="2" ry="2" />
+<text  x="930.78" y="303.5" >cc..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (1 samples, 2.78%)</title><rect x="1091.7" y="597" width="32.7" height="15.0" fill="rgb(249,73,19)" rx="2" ry="2" />
+<text  x="1094.67" y="607.5" >ba..</text>
+</g>
+<g >
+<title>cc::Scheduler::CancelPendingBeginFrameTask() (2 samples, 5.56%)</title><rect x="239.4" y="533" width="65.6" height="15.0" fill="rgb(208,180,15)" rx="2" ry="2" />
+<text  x="242.44" y="543.5" >cc::Sch..</text>
+</g>
+<g >
+<title>cc::PictureLayerTilingSet::UpdateTilingsToCurrentRasterSourceForActivation(scoped_refptr&lt;cc::RasterSource&gt;, cc::PictureLayerTilingSet const*, cc::Region const&amp;, float, float) (1 samples, 2.78%)</title><rect x="600.0" y="437" width="32.8" height="15.0" fill="rgb(237,51,43)" rx="2" ry="2" />
+<text  x="603.00" y="447.5" >cc..</text>
+</g>
+<g >
+<title>cc::(anonymous namespace)::TaskSetFinishedTaskImpl::~TaskSetFinishedTaskImpl() (1 samples, 2.78%)</title><rect x="632.8" y="565" width="32.8" height="15.0" fill="rgb(249,191,54)" rx="2" ry="2" />
+<text  x="635.78" y="575.5" >cc..</text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::DetachFromSequence() (1 samples, 2.78%)</title><rect x="534.4" y="421" width="32.8" height="15.0" fill="rgb(249,24,18)" rx="2" ry="2" />
+<text  x="537.44" y="431.5" >ba..</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 2.78%)</title><rect x="960.6" y="181" width="32.7" height="15.0" fill="rgb(211,82,51)" rx="2" ry="2" />
+<text  x="963.56" y="191.5" >mo..</text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 2.78%)</title><rect x="698.3" y="501" width="32.8" height="15.0" fill="rgb(254,84,4)" rx="2" ry="2" />
+<text  x="701.33" y="511.5" >_p..</text>
+</g>
+<g >
+<title>mach_msg_trap (3 samples, 8.33%)</title><rect x="75.6" y="629" width="98.3" height="15.0" fill="rgb(235,72,33)" rx="2" ry="2" />
+<text  x="78.56" y="639.5" >mach_msg_trap</text>
+</g>
+<g >
+<title>base::internal::WeakReferenceOwner::Invalidate() (1 samples, 2.78%)</title><rect x="239.4" y="517" width="32.8" height="15.0" fill="rgb(246,37,0)" rx="2" ry="2" />
+<text  x="242.44" y="527.5" >ba..</text>
+</g>
+<g >
+<title>cc::TileManager::PrepareTiles(cc::GlobalStateThatImpactsTilePriority const&amp;) (2 samples, 5.56%)</title><rect x="731.1" y="501" width="65.6" height="15.0" fill="rgb(250,25,38)" rx="2" ry="2" />
+<text  x="734.11" y="511.5" >cc::Til..</text>
+</g>
+<g >
+<title>cc::Scheduler::ProcessScheduledActions() (5 samples, 13.89%)</title><rect x="665.6" y="597" width="163.8" height="15.0" fill="rgb(206,198,49)" rx="2" ry="2" />
+<text  x="668.56" y="607.5" >cc::Scheduler::Proces..</text>
+</g>
+<g >
+<title>cc::Scheduler::BeginImplFrame(viz::BeginFrameArgs const&amp;, base::TimeTicks) (3 samples, 8.33%)</title><rect x="862.2" y="341" width="98.4" height="15.0" fill="rgb(211,20,6)" rx="2" ry="2" />
+<text  x="865.22" y="351.5" >cc::Schedul..</text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::HandleIncomingMessage(mojo::Message*) (1 samples, 2.78%)</title><rect x="206.7" y="533" width="32.7" height="15.0" fill="rgb(251,187,34)" rx="2" ry="2" />
+<text  x="209.67" y="543.5" >mo..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::PrepareToDraw(cc::LayerTreeHostImpl::FrameData*) (1 samples, 2.78%)</title><rect x="468.9" y="517" width="32.8" height="15.0" fill="rgb(216,55,51)" rx="2" ry="2" />
+<text  x="471.89" y="527.5" >cc..</text>
+</g>
+<g >
+<title>cc::TileManager::AssignGpuMemoryToTiles() (2 samples, 5.56%)</title><rect x="731.1" y="485" width="65.6" height="15.0" fill="rgb(226,148,47)" rx="2" ry="2" />
+<text  x="734.11" y="495.5" >cc::Til..</text>
+</g>
+<g >
+<title>viz::mojom::CompositorFrameSinkProxy::DidNotProduceFrame(viz::BeginFrameAck const&amp;) (1 samples, 2.78%)</title><rect x="895.0" y="261" width="32.8" height="15.0" fill="rgb(249,224,18)" rx="2" ry="2" />
+<text  x="898.00" y="271.5" >vi..</text>
+</g>
+<g >
+<title>non-virtual thunk to cc::ProxyImpl::DidNotProduceFrame(viz::BeginFrameAck const&amp;) (1 samples, 2.78%)</title><rect x="895.0" y="293" width="32.8" height="15.0" fill="rgb(254,110,4)" rx="2" ry="2" />
+<text  x="898.00" y="303.5" >no..</text>
+</g>
+<g >
+<title>cc::mojo_embedder::AsyncLayerTreeFrameSink::DidNotProduceFrame(viz::BeginFrameAck const&amp;) (1 samples, 2.78%)</title><rect x="272.2" y="501" width="32.8" height="15.0" fill="rgb(254,110,11)" rx="2" ry="2" />
+<text  x="275.22" y="511.5" >cc..</text>
+</g>
+<g >
+<title>cc::PictureLayerTiling::TakeTilesAndPropertiesFrom(cc::PictureLayerTiling*, cc::Region const&amp;) (1 samples, 2.78%)</title><rect x="600.0" y="405" width="32.8" height="15.0" fill="rgb(242,10,22)" rx="2" ry="2" />
+<text  x="603.00" y="415.5" >cc..</text>
+</g>
+<g >
+<title>mojo::core::UserMessageImpl::~UserMessageImpl() (1 samples, 2.78%)</title><rect x="993.3" y="405" width="32.8" height="15.0" fill="rgb(221,215,18)" rx="2" ry="2" />
+<text  x="996.33" y="415.5" >mo..</text>
+</g>
+<g >
+<title>mojo::core::UserMessageImpl::~UserMessageImpl() (1 samples, 2.78%)</title><rect x="993.3" y="421" width="32.8" height="15.0" fill="rgb(250,53,1)" rx="2" ry="2" />
+<text  x="996.33" y="431.5" >mo..</text>
+</g>
+<g >
+<title>base::TaskAnnotator::RunTask(char const*, base::PendingTask*) (26 samples, 72.22%)</title><rect x="206.7" y="645" width="852.2" height="15.0" fill="rgb(238,185,18)" rx="2" ry="2" />
+<text  x="209.67" y="655.5" >base::TaskAnnotator::RunTask(char const*, base::PendingTask*)</text>
+</g>
+<g >
+<title>cc::RasterSource::HasRecordings() const (1 samples, 2.78%)</title><rect x="796.7" y="485" width="32.7" height="15.0" fill="rgb(229,69,16)" rx="2" ry="2" />
+<text  x="799.67" y="495.5" >cc..</text>
+</g>
+<g >
+<title>cc::mojo_embedder::AsyncLayerTreeFrameSink::DidNotProduceFrame(viz::BeginFrameAck const&amp;) (1 samples, 2.78%)</title><rect x="895.0" y="277" width="32.8" height="15.0" fill="rgb(216,159,6)" rx="2" ry="2" />
+<text  x="898.00" y="287.5" >cc..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::CalculateRenderPasses(cc::LayerTreeHostImpl::FrameData*) (1 samples, 2.78%)</title><rect x="468.9" y="501" width="32.8" height="15.0" fill="rgb(248,10,49)" rx="2" ry="2" />
+<text  x="471.89" y="511.5" >cc..</text>
+</g>
+<g >
+<title>cc::ScrollTree::PushScrollUpdatesFromPendingTree(cc::PropertyTrees*, cc::LayerTreeImpl*) (1 samples, 2.78%)</title><rect x="534.4" y="469" width="32.8" height="15.0" fill="rgb(253,197,14)" rx="2" ry="2" />
+<text  x="537.44" y="479.5" >cc..</text>
+</g>
+<g >
+<title>cc::TreeSynchronizer::PushLayerProperties(cc::LayerTreeImpl*, cc::LayerTreeImpl*) (1 samples, 2.78%)</title><rect x="600.0" y="485" width="32.8" height="15.0" fill="rgb(219,86,49)" rx="2" ry="2" />
+<text  x="603.00" y="495.5" >cc..</text>
+</g>
+<g >
+<title>cc::UniqueNotifier::Notify() (4 samples, 11.11%)</title><rect x="534.4" y="613" width="131.2" height="15.0" fill="rgb(249,85,43)" rx="2" ry="2" />
+<text  x="537.44" y="623.5" >cc::UniqueNotifi..</text>
+</g>
+<g >
+<title>cc::PictureLayerImpl::UpdateRasterSource(scoped_refptr&lt;cc::RasterSource&gt;, cc::Region*, cc::PictureLayerTilingSet const*, base::flat_map&lt;scoped_refptr&lt;cc::PaintWorkletInput&gt;, sk_sp&lt;cc::PaintOpBuffer&gt;, std::__Cr::less&lt;void&gt; &gt; const*) (1 samples, 2.78%)</title><rect x="600.0" y="453" width="32.8" height="15.0" fill="rgb(205,220,50)" rx="2" ry="2" />
+<text  x="603.00" y="463.5" >cc..</text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::ProcessIncomingMessage(mojo::internal::MultiplexRouter::MessageWrapper*, mojo::internal::MultiplexRouter::ClientCallBehavior, base::SequencedTaskRunner*) (5 samples, 13.89%)</title><rect x="862.2" y="501" width="163.9" height="15.0" fill="rgb(215,204,18)" rx="2" ry="2" />
+<text  x="865.22" y="511.5" >mojo::internal::Multi..</text>
+</g>
+<g >
+<title>cc::RasterTilePriorityQueue::Create(std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, cc::TreePriority, cc::RasterTilePriorityQueue::Type) (1 samples, 2.78%)</title><rect x="305.0" y="469" width="32.8" height="15.0" fill="rgb(251,27,8)" rx="2" ry="2" />
+<text  x="308.00" y="479.5" >cc..</text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::WriteMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 2.78%)</title><rect x="403.3" y="389" width="32.8" height="15.0" fill="rgb(221,195,47)" rx="2" ry="2" />
+<text  x="406.33" y="399.5" >mo..</text>
+</g>
+<g >
+<title>mojo::core::Core::WriteMessage(unsigned int, unsigned long, MojoWriteMessageOptions const*) (1 samples, 2.78%)</title><rect x="960.6" y="229" width="32.7" height="15.0" fill="rgb(254,221,28)" rx="2" ry="2" />
+<text  x="963.56" y="239.5" >mo..</text>
+</g>
+<g >
+<title>base::TaskToken::operator==(base::TaskToken const&amp;) const (1 samples, 2.78%)</title><rect x="1091.7" y="565" width="32.7" height="15.0" fill="rgb(225,196,12)" rx="2" ry="2" />
+<text  x="1094.67" y="575.5" >ba..</text>
+</g>
+<g >
+<title>cc::(anonymous namespace)::CreateTilingSetRasterQueues(std::__Cr::vector&lt;cc::PictureLayerImpl*, std::__Cr::allocator&lt;cc::PictureLayerImpl*&gt; &gt; const&amp;, cc::TreePriority, std::__Cr::vector&lt;std::__Cr::unique_ptr&lt;cc::TilingSetRasterQueueAll, std::__Cr::default_delete&lt;cc::TilingSetRasterQueueAll&gt; &gt;, std::__Cr::allocator&lt;std::__Cr::unique_ptr&lt;cc::TilingSetRasterQueueAll, std::__Cr::default_delete&lt;cc::TilingSetRasterQueueAll&gt; &gt; &gt; &gt;*) (1 samples, 2.78%)</title><rect x="305.0" y="437" width="32.8" height="15.0" fill="rgb(235,169,6)" rx="2" ry="2" />
+<text  x="308.00" y="447.5" >cc..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::UpdateSyncTreeAfterCommitOrImplSideInvalidation() (3 samples, 8.33%)</title><rect x="731.1" y="549" width="98.3" height="15.0" fill="rgb(211,218,52)" rx="2" ry="2" />
+<text  x="734.11" y="559.5" >cc::LayerTr..</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::PrepareToForwardUserMessage(mojo::core::ports::PortRef const&amp;, mojo::core::ports::Port::State, bool, mojo::core::ports::UserMessageEvent*, mojo::core::ports::NodeName*) (1 samples, 2.78%)</title><rect x="403.3" y="325" width="32.8" height="15.0" fill="rgb(218,185,2)" rx="2" ry="2" />
+<text  x="406.33" y="335.5" >mo..</text>
+</g>
+<g >
+<title>viz::ExternalBeginFrameSource::OnBeginFrame(viz::BeginFrameArgs const&amp;) (4 samples, 11.11%)</title><rect x="862.2" y="405" width="131.1" height="15.0" fill="rgb(205,156,50)" rx="2" ry="2" />
+<text  x="865.22" y="415.5" >viz::ExternalBeg..</text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::InterfaceEndpoint::SendMessage(mojo::Message*) (1 samples, 2.78%)</title><rect x="960.6" y="277" width="32.7" height="15.0" fill="rgb(254,39,33)" rx="2" ry="2" />
+<text  x="963.56" y="287.5" >mo..</text>
+</g>
+<g >
+<title>cc::ProxyImpl::ScheduledActionPrepareTiles() (2 samples, 5.56%)</title><rect x="305.0" y="565" width="65.6" height="15.0" fill="rgb(231,150,21)" rx="2" ry="2" />
+<text  x="308.00" y="575.5" >cc::Pro..</text>
+</g>
+<g >
+<title>cc::PictureLayerTiling::SetRasterSourceAndResize(scoped_refptr&lt;cc::RasterSource&gt;) (1 samples, 2.78%)</title><rect x="600.0" y="389" width="32.8" height="15.0" fill="rgb(248,1,53)" rx="2" ry="2" />
+<text  x="603.00" y="399.5" >cc..</text>
+</g>
+<g >
+<title>cc::ProxyImpl::DrawInternal(bool) (4 samples, 11.11%)</title><rect x="370.6" y="533" width="131.1" height="15.0" fill="rgb(239,185,18)" rx="2" ry="2" />
+<text  x="373.56" y="543.5" >cc::ProxyImpl::D..</text>
+</g>
+<g >
+<title>__psynch_mutexdrop (1 samples, 2.78%)</title><rect x="960.6" y="37" width="32.7" height="15.0" fill="rgb(228,114,3)" rx="2" ry="2" />
+<text  x="963.56" y="47.5" >__..</text>
+</g>
+<g >
+<title>cc::LayerTreeImpl::SetPropertyTrees(cc::PropertyTrees*) (2 samples, 5.56%)</title><rect x="665.6" y="549" width="65.5" height="15.0" fill="rgb(211,69,38)" rx="2" ry="2" />
+<text  x="668.56" y="559.5" >cc::Lay..</text>
+</g>
+<g >
+<title>MojoDestroyMessage (1 samples, 2.78%)</title><rect x="993.3" y="469" width="32.8" height="15.0" fill="rgb(244,117,39)" rx="2" ry="2" />
+<text  x="996.33" y="479.5" >Mo..</text>
+</g>
+<g >
+<title>pthread_mutex_destroy (1 samples, 2.78%)</title><rect x="1157.2" y="453" width="32.8" height="15.0" fill="rgb(214,72,26)" rx="2" ry="2" />
+<text  x="1160.22" y="463.5" >pt..</text>
+</g>
+<g >
+<title>mojo::core::Core::DestroyMessage(unsigned long) (1 samples, 2.78%)</title><rect x="993.3" y="453" width="32.8" height="15.0" fill="rgb(209,211,33)" rx="2" ry="2" />
+<text  x="996.33" y="463.5" >mo..</text>
+</g>
+<g >
+<title>base::HistogramBase::CheckName(base::BasicStringPiece&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt; const&amp;) const (1 samples, 2.78%)</title><rect x="862.2" y="293" width="32.8" height="15.0" fill="rgb(215,176,36)" rx="2" ry="2" />
+<text  x="865.22" y="303.5" >ba..</text>
+</g>
+<g >
+<title>cc::Scheduler::OnBeginFrameDerivedImpl(viz::BeginFrameArgs const&amp;) (4 samples, 11.11%)</title><rect x="862.2" y="373" width="131.1" height="15.0" fill="rgb(230,109,22)" rx="2" ry="2" />
+<text  x="865.22" y="383.5" >cc::Scheduler::O..</text>
+</g>
+<g >
+<title>scoped_refptr&lt;cc::SyncedProperty&lt;cc::AdditionGroup&lt;gfx::ScrollOffset&gt; &gt; &gt;::~scoped_refptr() (1 samples, 2.78%)</title><rect x="534.4" y="453" width="32.8" height="15.0" fill="rgb(253,210,33)" rx="2" ry="2" />
+<text  x="537.44" y="463.5" >sc..</text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::SendChannelMessage(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (1 samples, 2.78%)</title><rect x="960.6" y="117" width="32.7" height="15.0" fill="rgb(230,125,44)" rx="2" ry="2" />
+<text  x="963.56" y="127.5" >mo..</text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (base::internal::CancelableCallbackImpl&lt;base::OnceCallback&lt;void ()&gt; &gt;::*)(), base::WeakPtr&lt;base::internal::CancelableCallbackImpl&lt;base::OnceCallback&lt;void ()&gt; &gt; &gt; &gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (8 samples, 22.22%)</title><rect x="239.4" y="629" width="262.3" height="15.0" fill="rgb(251,98,53)" rx="2" ry="2" />
+<text  x="242.44" y="639.5" >base::internal::Invoker&lt;base::inter..</text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::WriteChannelMessage(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (1 samples, 2.78%)</title><rect x="960.6" y="101" width="32.7" height="15.0" fill="rgb(231,34,46)" rx="2" ry="2" />
+<text  x="963.56" y="111.5" >mo..</text>
+</g>
+<g >
+<title>non-virtual thunk to cc::ProxyImpl::DidNotProduceFrame(viz::BeginFrameAck const&amp;) (1 samples, 2.78%)</title><rect x="272.2" y="517" width="32.8" height="15.0" fill="rgb(247,136,52)" rx="2" ry="2" />
+<text  x="275.22" y="527.5" >no..</text>
+</g>
+<g >
+<title>cc::TilingSetRasterQueueAll::TilingSetRasterQueueAll(cc::PictureLayerTilingSet*, bool, bool) (1 samples, 2.78%)</title><rect x="305.0" y="421" width="32.8" height="15.0" fill="rgb(254,186,32)" rx="2" ry="2" />
+<text  x="308.00" y="431.5" >cc..</text>
+</g>
+<g >
+<title>base::internal::WeakReference::Flag::Invalidate() (1 samples, 2.78%)</title><rect x="239.4" y="501" width="32.8" height="15.0" fill="rgb(208,41,31)" rx="2" ry="2" />
+<text  x="242.44" y="511.5" >ba..</text>
+</g>
+<g >
+<title>non-virtual thunk to cc::ProxyImpl::WillBeginImplFrame(viz::BeginFrameArgs const&amp;) (1 samples, 2.78%)</title><rect x="927.8" y="325" width="32.8" height="15.0" fill="rgb(234,216,32)" rx="2" ry="2" />
+<text  x="930.78" y="335.5" >no..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::BuildRasterQueue(cc::TreePriority, cc::RasterTilePriorityQueue::Type) (2 samples, 5.56%)</title><rect x="731.1" y="453" width="65.6" height="15.0" fill="rgb(227,142,47)" rx="2" ry="2" />
+<text  x="734.11" y="463.5" >cc::Lay..</text>
+</g>
+<g >
+<title>base::subtle::RefCountedBase::Release() const (1 samples, 2.78%)</title><rect x="534.4" y="437" width="32.8" height="15.0" fill="rgb(207,192,20)" rx="2" ry="2" />
+<text  x="537.44" y="447.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueueSets::OnTaskPushedToEmptyQueue(base::sequence_manager::internal::WorkQueue*) (1 samples, 2.78%)</title><rect x="1124.4" y="549" width="32.8" height="15.0" fill="rgb(244,163,27)" rx="2" ry="2" />
+<text  x="1127.44" y="559.5" >ba..</text>
+</g>
+<g >
+<title>base::MessagePumpDefault::Run(base::MessagePump::Delegate*) (36 samples, 100.00%)</title><rect x="10.0" y="693" width="1180.0" height="15.0" fill="rgb(208,221,46)" rx="2" ry="2" />
+<text  x="13.00" y="703.5" >base::MessagePumpDefault::Run(base::MessagePump::Delegate*)</text>
+</g>
+<g >
+<title>mojo::FilterChain::Accept(mojo::Message*) (1 samples, 2.78%)</title><rect x="206.7" y="581" width="32.7" height="15.0" fill="rgb(248,66,28)" rx="2" ry="2" />
+<text  x="209.67" y="591.5" >mo..</text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::~SequenceCheckerImpl() (1 samples, 2.78%)</title><rect x="1157.2" y="501" width="32.8" height="15.0" fill="rgb(206,187,8)" rx="2" ry="2" />
+<text  x="1160.22" y="511.5" >ba..</text>
+</g>
+<g >
+<title>free (1 samples, 2.78%)</title><rect x="534.4" y="405" width="32.8" height="15.0" fill="rgb(236,184,7)" rx="2" ry="2" />
+<text  x="537.44" y="415.5" >free</text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::WriteMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 2.78%)</title><rect x="272.2" y="389" width="32.8" height="15.0" fill="rgb(246,181,13)" rx="2" ry="2" />
+<text  x="275.22" y="399.5" >mo..</text>
+</g>
+<g >
+<title>cc::LayerTreeImpl::TotalMaxScrollOffset() const (1 samples, 2.78%)</title><rect x="927.8" y="261" width="32.8" height="15.0" fill="rgb(230,226,7)" rx="2" ry="2" />
+<text  x="930.78" y="271.5" >cc..</text>
+</g>
+<g >
+<title>_pthread_body (36 samples, 100.00%)</title><rect x="10.0" y="773" width="1180.0" height="15.0" fill="rgb(239,126,51)" rx="2" ry="2" />
+<text  x="13.00" y="783.5" >_pthread_body</text>
+</g>
+<g >
+<title>non-virtual thunk to cc::LayerTreeHostImpl::BuildRasterQueue(cc::TreePriority, cc::RasterTilePriorityQueue::Type) (1 samples, 2.78%)</title><rect x="305.0" y="501" width="32.8" height="15.0" fill="rgb(222,2,47)" rx="2" ry="2" />
+<text  x="308.00" y="511.5" >no..</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessageInternal(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*) (1 samples, 2.78%)</title><rect x="960.6" y="165" width="32.7" height="15.0" fill="rgb(222,26,52)" rx="2" ry="2" />
+<text  x="963.56" y="175.5" >mo..</text>
+</g>
+<g >
+<title>mojo::internal::Serializer&lt;mojo::ArrayDataView&lt;float&gt;, SkMatrix44 const&gt;::Serialize(SkMatrix44 const&amp;, mojo::internal::Buffer*, mojo::internal::Array_Data&lt;float&gt;::BufferWriter*, mojo::internal::ContainerValidateParams const*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="325" width="32.8" height="15.0" fill="rgb(242,54,29)" rx="2" ry="2" />
+<text  x="439.11" y="335.5" >mo..</text>
+</g>
+<g >
+<title>cc::ScrollTree::scroll_bounds(int) const (1 samples, 2.78%)</title><rect x="927.8" y="229" width="32.8" height="15.0" fill="rgb(234,17,35)" rx="2" ry="2" />
+<text  x="930.78" y="239.5" >cc..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::WillBeginImplFrame(viz::BeginFrameArgs const&amp;) (1 samples, 2.78%)</title><rect x="927.8" y="309" width="32.8" height="15.0" fill="rgb(242,153,27)" rx="2" ry="2" />
+<text  x="930.78" y="319.5" >cc..</text>
+</g>
+<g >
+<title>cc::LayerTreeImpl::UpdateDrawProperties(bool) (1 samples, 2.78%)</title><rect x="796.7" y="533" width="32.7" height="15.0" fill="rgb(228,210,10)" rx="2" ry="2" />
+<text  x="799.67" y="543.5" >cc..</text>
+</g>
+<g >
+<title>non-virtual thunk to cc::LayerTreeHostImpl::BuildRasterQueue(cc::TreePriority, cc::RasterTilePriorityQueue::Type) (2 samples, 5.56%)</title><rect x="731.1" y="469" width="65.6" height="15.0" fill="rgb(245,188,19)" rx="2" ry="2" />
+<text  x="734.11" y="479.5" >non-vir..</text>
+</g>
+<g >
+<title>mojo::internal::Serializer&lt;mojo::ArrayDataView&lt;viz::mojom::DrawQuadDataView&gt;, viz::QuadList const&gt;::Serialize(viz::QuadList const&amp;, mojo::internal::Buffer*, mojo::internal::Array_Data&lt;mojo::internal::Pointer&lt;viz::mojom::internal::DrawQuad_Data&gt; &gt;::BufferWriter*, mojo::internal::ContainerValidateParams const*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="405" width="32.8" height="15.0" fill="rgb(213,67,23)" rx="2" ry="2" />
+<text  x="439.11" y="415.5" >mo..</text>
+</g>
+<g >
+<title>cc::ScrollTree::MaxScrollOffset(int) const (1 samples, 2.78%)</title><rect x="927.8" y="245" width="32.8" height="15.0" fill="rgb(243,145,35)" rx="2" ry="2" />
+<text  x="930.78" y="255.5" >cc..</text>
+</g>
+<g >
+<title>mojo::internal::Serializer&lt;mojo::ArrayDataView&lt;viz::mojom::RenderPassDataView&gt;, std::__Cr::vector&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt;, std::__Cr::allocator&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt; &gt; &gt; const&gt;::Serialize(std::__Cr::vector&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt;, std::__Cr::allocator&lt;std::__Cr::unique_ptr&lt;viz::RenderPass, std::__Cr::default_delete&lt;viz::RenderPass&gt; &gt; &gt; &gt; const&amp;, mojo::internal::Buffer*, mojo::internal::Array_Data&lt;mojo::internal::Pointer&lt;viz::mojom::internal::RenderPass_Data&gt; &gt;::BufferWriter*, mojo::internal::ContainerValidateParams const*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="453" width="32.8" height="15.0" fill="rgb(235,87,20)" rx="2" ry="2" />
+<text  x="439.11" y="463.5" >mo..</text>
+</g>
+<g >
+<title>mojo::core::Core::WriteMessage(unsigned int, unsigned long, MojoWriteMessageOptions const*) (1 samples, 2.78%)</title><rect x="403.3" y="405" width="32.8" height="15.0" fill="rgb(239,193,9)" rx="2" ry="2" />
+<text  x="406.33" y="415.5" >mo..</text>
+</g>
+<g >
+<title>void std::__Cr::__sift_down&lt;cc::(anonymous namespace)::RasterOrderComparator&amp;, std::__Cr::__wrap_iter&lt;std::__Cr::unique_ptr&lt;cc::TilingSetRasterQueueAll, std::__Cr::default_delete&lt;cc::TilingSetRasterQueueAll&gt; &gt;*&gt; &gt;(std::__Cr::__wrap_iter&lt;std::__Cr::unique_ptr&lt;cc::TilingSetRasterQueueAll, std::__Cr::default_delete&lt;cc::TilingSetRasterQueueAll&gt; &gt;*&gt;, std::__Cr::__wrap_iter&lt;std::__Cr::unique_ptr&lt;cc::TilingSetRasterQueueAll, std::__Cr::default_delete&lt;cc::TilingSetRasterQueueAll&gt; &gt;*&gt;, cc::(anonymous namespace)::RasterOrderComparator&amp;, std::__Cr::iterator_traits&lt;std::__Cr::__wrap_iter&lt;std::__Cr::unique_ptr&lt;cc::TilingSetRasterQueueAll, std::__Cr::default_delete&lt;cc::TilingSetRasterQueueAll&gt; &gt;*&gt; &gt;::difference_type, std::__Cr::__wrap_iter&lt;std::__Cr::unique_ptr&lt;cc::TilingSetRasterQueueAll, std::__Cr::default_delete&lt;cc::TilingSetRasterQueueAll&gt; &gt;*&gt;) (1 samples, 2.78%)</title><rect x="763.9" y="389" width="32.8" height="15.0" fill="rgb(237,82,49)" rx="2" ry="2" />
+<text  x="766.89" y="399.5" >vo..</text>
+</g>
+<g >
+<title>cc::Scheduler::FinishImplFrame() (2 samples, 5.56%)</title><rect x="239.4" y="581" width="65.6" height="15.0" fill="rgb(244,190,33)" rx="2" ry="2" />
+<text  x="242.44" y="591.5" >cc::Sch..</text>
+</g>
+<g >
+<title>cc::TileManager::CheckPendingGpuWorkAndIssueSignals() (3 samples, 8.33%)</title><rect x="534.4" y="581" width="98.4" height="15.0" fill="rgb(232,95,45)" rx="2" ry="2" />
+<text  x="537.44" y="591.5" >cc::TileMan..</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 2.78%)</title><rect x="1026.1" y="517" width="32.8" height="15.0" fill="rgb(239,152,41)" rx="2" ry="2" />
+<text  x="1029.11" y="527.5" >&lt;U..</text>
+</g>
+<g >
+<title>mach_msg (3 samples, 8.33%)</title><rect x="75.6" y="645" width="98.3" height="15.0" fill="rgb(242,164,3)" rx="2" ry="2" />
+<text  x="78.56" y="655.5" >mach_msg</text>
+</g>
+<g >
+<title>cc::Scheduler::StartOrStopBeginFrames() (2 samples, 5.56%)</title><rect x="239.4" y="549" width="65.6" height="15.0" fill="rgb(222,126,6)" rx="2" ry="2" />
+<text  x="242.44" y="559.5" >cc::Sch..</text>
+</g>
+<g >
+<title>cc::Scheduler::ProcessScheduledActions() (6 samples, 16.67%)</title><rect x="305.0" y="581" width="196.7" height="15.0" fill="rgb(213,104,42)" rx="2" ry="2" />
+<text  x="308.00" y="591.5" >cc::Scheduler::ProcessSch..</text>
+</g>
+<g >
+<title>mojo::Connector::ReadMessage(mojo::Message*) (1 samples, 2.78%)</title><rect x="1026.1" y="549" width="32.8" height="15.0" fill="rgb(210,19,39)" rx="2" ry="2" />
+<text  x="1029.11" y="559.5" >mo..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoSomeWork() (31 samples, 86.11%)</title><rect x="173.9" y="677" width="1016.1" height="15.0" fill="rgb(212,61,27)" rx="2" ry="2" />
+<text  x="176.89" y="687.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoSomeWork()</text>
+</g>
+<g >
+<title>non-virtual thunk to cc::PictureLayerImpl::CalculateTileSize(gfx::Size const&amp;) (1 samples, 2.78%)</title><rect x="600.0" y="373" width="32.8" height="15.0" fill="rgb(246,174,0)" rx="2" ry="2" />
+<text  x="603.00" y="383.5" >no..</text>
+</g>
+<g >
+<title>viz::mojom::internal::CompositorFrameSinkClient_OnBeginFrame_Params_Data::Validate(void const*, mojo::internal::ValidationContext*) (1 samples, 2.78%)</title><rect x="206.7" y="485" width="32.7" height="15.0" fill="rgb(222,132,3)" rx="2" ry="2" />
+<text  x="209.67" y="495.5" >vi..</text>
+</g>
+<g >
+<title>mojo::core::NodeController::ForwardEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (1 samples, 2.78%)</title><rect x="960.6" y="149" width="32.7" height="15.0" fill="rgb(222,57,24)" rx="2" ry="2" />
+<text  x="963.56" y="159.5" >mo..</text>
+</g>
+<g >
+<title>cc::ProxyImpl::ScheduledActionCommit() (5 samples, 13.89%)</title><rect x="665.6" y="581" width="163.8" height="15.0" fill="rgb(247,161,36)" rx="2" ry="2" />
+<text  x="668.56" y="591.5" >cc::ProxyImpl::Schedu..</text>
+</g>
+<g >
+<title>+[NSAutoreleasePool allocWithZone:] (1 samples, 2.78%)</title><rect x="10.0" y="677" width="32.8" height="15.0" fill="rgb(213,199,30)" rx="2" ry="2" />
+<text  x="13.00" y="687.5" >+[..</text>
+</g>
+<g >
+<title>viz::mojom::CompositorFrameSinkProxy::DidNotProduceFrame(viz::BeginFrameAck const&amp;) (1 samples, 2.78%)</title><rect x="960.6" y="309" width="32.7" height="15.0" fill="rgb(208,215,35)" rx="2" ry="2" />
+<text  x="963.56" y="319.5" >vi..</text>
+</g>
+<g >
+<title>cc::ProxyImpl::NotifyReadyToActivate() (3 samples, 8.33%)</title><rect x="534.4" y="549" width="98.4" height="15.0" fill="rgb(226,50,7)" rx="2" ry="2" />
+<text  x="537.44" y="559.5" >cc::ProxyIm..</text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 2.78%)</title><rect x="272.2" y="373" width="32.8" height="15.0" fill="rgb(227,220,50)" rx="2" ry="2" />
+<text  x="275.22" y="383.5" >ba..</text>
+</g>
+<g >
+<title>mojo::core::ports::UserMessageEvent::~UserMessageEvent() (1 samples, 2.78%)</title><rect x="993.3" y="437" width="32.8" height="15.0" fill="rgb(246,84,10)" rx="2" ry="2" />
+<text  x="996.33" y="447.5" >mo..</text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;base::internal::IgnoreResultHelper&lt;bool (mojo::Connector::*)()&gt;, base::WeakPtr&lt;mojo::Connector&gt; &gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (1 samples, 2.78%)</title><rect x="206.7" y="629" width="32.7" height="15.0" fill="rgb(228,189,18)" rx="2" ry="2" />
+<text  x="209.67" y="639.5" >ba..</text>
+</g>
+<g >
+<title>MojoWriteMessage (1 samples, 2.78%)</title><rect x="272.2" y="421" width="32.8" height="15.0" fill="rgb(245,71,28)" rx="2" ry="2" />
+<text  x="275.22" y="431.5" >Mo..</text>
+</g>
+<g >
+<title>tiny_size (1 samples, 2.78%)</title><rect x="534.4" y="389" width="32.8" height="15.0" fill="rgb(221,139,17)" rx="2" ry="2" />
+<text  x="537.44" y="399.5" >ti..</text>
+</g>
+<g >
+<title>MojoGetMessageDataImpl (1 samples, 2.78%)</title><rect x="1026.1" y="501" width="32.8" height="15.0" fill="rgb(235,70,5)" rx="2" ry="2" />
+<text  x="1029.11" y="511.5" >Mo..</text>
+</g>
+<g >
+<title>cc::LayerTreeHostImpl::DrawLayers(cc::LayerTreeHostImpl::FrameData*) (3 samples, 8.33%)</title><rect x="370.6" y="517" width="98.3" height="15.0" fill="rgb(222,199,41)" rx="2" ry="2" />
+<text  x="373.56" y="527.5" >cc::LayerTr..</text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 2.78%)</title><rect x="239.4" y="469" width="32.8" height="15.0" fill="rgb(231,116,51)" rx="2" ry="2" />
+<text  x="242.44" y="479.5" >op..</text>
+</g>
+<g >
+<title>all (36 samples, 100%)</title><rect x="10.0" y="837" width="1180.0" height="15.0" fill="rgb(212,11,30)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::NotifyDidProcessTask(base::sequence_manager::internal::SequenceManagerImpl::ExecutingTask*, base::sequence_manager::LazyNow*) (2 samples, 5.56%)</title><rect x="1058.9" y="629" width="65.5" height="15.0" fill="rgb(242,150,17)" rx="2" ry="2" />
+<text  x="1061.89" y="639.5" >base::s..</text>
+</g>
+<g >
+<title>cc::TileManager::IssueSignals() (3 samples, 8.33%)</title><rect x="534.4" y="565" width="98.4" height="15.0" fill="rgb(244,151,44)" rx="2" ry="2" />
+<text  x="537.44" y="575.5" >cc::TileMan..</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessageInternal(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*) (1 samples, 2.78%)</title><rect x="403.3" y="341" width="32.8" height="15.0" fill="rgb(241,149,37)" rx="2" ry="2" />
+<text  x="406.33" y="351.5" >mo..</text>
+</g>
+<g >
+<title>mojo::SimpleWatcher::DiscardReadyState(base::RepeatingCallback&lt;void (unsigned int)&gt; const&amp;, unsigned int, mojo::HandleSignalsState const&amp;) (7 samples, 19.44%)</title><rect x="829.4" y="597" width="229.5" height="15.0" fill="rgb(212,66,20)" rx="2" ry="2" />
+<text  x="832.44" y="607.5" >mojo::SimpleWatcher::DiscardRe..</text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::HandleIncomingMessage(mojo::Message*) (4 samples, 11.11%)</title><rect x="862.2" y="485" width="131.1" height="15.0" fill="rgb(226,53,51)" rx="2" ry="2" />
+<text  x="865.22" y="495.5" >mojo::InterfaceE..</text>
+</g>
+<g >
+<title>base::internal::BindState&lt;void (base::internal::CancelableCallbackImpl&lt;base::OnceCallback&lt;void ()&gt; &gt;::*)(), base::WeakPtr&lt;base::internal::CancelableCallbackImpl&lt;base::OnceCallback&lt;void ()&gt; &gt; &gt; &gt;::Destroy(base::internal::BindStateBase const*) (1 samples, 2.78%)</title><rect x="1157.2" y="533" width="32.8" height="15.0" fill="rgb(250,174,10)" rx="2" ry="2" />
+<text  x="1160.22" y="543.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueue::TakeImmediateIncomingQueueTasks() (1 samples, 2.78%)</title><rect x="1124.4" y="565" width="32.8" height="15.0" fill="rgb(218,30,13)" rx="2" ry="2" />
+<text  x="1127.44" y="575.5" >ba..</text>
+</g>
+<g >
+<title>mojo::SimpleWatcher::OnHandleReady(int, unsigned int, mojo::HandleSignalsState const&amp;) (7 samples, 19.44%)</title><rect x="829.4" y="613" width="229.5" height="15.0" fill="rgb(242,107,42)" rx="2" ry="2" />
+<text  x="832.44" y="623.5" >mojo::SimpleWatcher::OnHandleR..</text>
+</g>
+<g >
+<title>std::__Cr::enable_if&lt;(__is_forward_iterator&lt;cc::TransformCachedNodeData*&gt;::value) &amp;&amp; (is_constructible&lt;cc::TransformCachedNodeData, std::__Cr::iterator_traits&lt;cc::TransformCachedNodeData*&gt;::reference&gt;::value), void&gt;::type std::__Cr::vector&lt;cc::TransformCachedNodeData, std::__Cr::allocator&lt;cc::TransformCachedNodeData&gt; &gt;::assign&lt;cc::TransformCachedNodeData*&gt;(cc::TransformCachedNodeData*, cc::TransformCachedNodeData*) (1 samples, 2.78%)</title><rect x="698.3" y="517" width="32.8" height="15.0" fill="rgb(209,132,3)" rx="2" ry="2" />
+<text  x="701.33" y="527.5" >st..</text>
+</g>
+<g >
+<title>cc::TilingSetRasterQueueAll::TilingIterator::TilingIterator() (1 samples, 2.78%)</title><rect x="305.0" y="405" width="32.8" height="15.0" fill="rgb(215,13,42)" rx="2" ry="2" />
+<text  x="308.00" y="415.5" >cc..</text>
+</g>
+<g >
+<title>mojo::internal::Serializer&lt;viz::mojom::SharedQuadStateDataView, mojo::OptSharedQuadState&gt;::Serialize(mojo::OptSharedQuadState&amp;, mojo::internal::Buffer*, viz::mojom::internal::SharedQuadState_Data::BufferWriter*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="357" width="32.8" height="15.0" fill="rgb(219,81,22)" rx="2" ry="2" />
+<text  x="439.11" y="367.5" >mo..</text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendPeerEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (1 samples, 2.78%)</title><rect x="960.6" y="133" width="32.7" height="15.0" fill="rgb(205,95,34)" rx="2" ry="2" />
+<text  x="963.56" y="143.5" >mo..</text>
+</g>
+<g >
+<title>viz::mojom::CompositorFrameSinkProxy::SubmitCompositorFrame(viz::LocalSurfaceId const&amp;, viz::CompositorFrame, base::Optional&lt;viz::HitTestRegionList&gt;, unsigned long long) (2 samples, 5.56%)</title><rect x="403.3" y="485" width="65.6" height="15.0" fill="rgb(216,204,0)" rx="2" ry="2" />
+<text  x="406.33" y="495.5" >viz::mo..</text>
+</g>
+<g >
+<title>mojo::internal::ArraySerializer&lt;mojo::ArrayDataView&lt;float&gt;, SkMatrix44 const, mojo::internal::ArrayIterator&lt;mojo::ArrayTraits&lt;SkMatrix44&gt;, SkMatrix44 const, false&gt;, void&gt;::SerializeElements(mojo::internal::ArrayIterator&lt;mojo::ArrayTraits&lt;SkMatrix44&gt;, SkMatrix44 const, false&gt;*, mojo::internal::Buffer*, mojo::internal::Array_Data&lt;float&gt;::BufferWriter*, mojo::internal::ContainerValidateParams const*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="309" width="32.8" height="15.0" fill="rgb(241,212,17)" rx="2" ry="2" />
+<text  x="439.11" y="319.5" >mo..</text>
+</g>
+<g >
+<title>void base::internal::CancelableCallbackImpl&lt;base::OnceCallback&lt;void ()&gt; &gt;::ForwardOnce&lt;&gt;() (8 samples, 22.22%)</title><rect x="239.4" y="613" width="262.3" height="15.0" fill="rgb(228,50,47)" rx="2" ry="2" />
+<text  x="242.44" y="623.5" >void base::internal::CancelableCall..</text>
+</g>
+<g >
+<title>mojo::internal::ArraySerializer&lt;mojo::ArrayDataView&lt;viz::mojom::DrawQuadDataView&gt;, viz::QuadList const, mojo::internal::ArrayIterator&lt;mojo::ArrayTraits&lt;viz::QuadList&gt;, viz::QuadList const, true&gt;, void&gt;::SerializeElements(mojo::internal::ArrayIterator&lt;mojo::ArrayTraits&lt;viz::QuadList&gt;, viz::QuadList const, true&gt;*, mojo::internal::Buffer*, mojo::internal::Array_Data&lt;mojo::internal::Pointer&lt;viz::mojom::internal::DrawQuad_Data&gt; &gt;::BufferWriter*, mojo::internal::ContainerValidateParams const*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="389" width="32.8" height="15.0" fill="rgb(225,66,47)" rx="2" ry="2" />
+<text  x="439.11" y="399.5" >mo..</text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 2.78%)</title><rect x="501.7" y="581" width="32.7" height="15.0" fill="rgb(208,167,17)" rx="2" ry="2" />
+<text  x="504.67" y="591.5" >ba..</text>
+</g>
+<g >
+<title>mojo::internal::Serializer&lt;viz::mojom::CompositorFrameDataView, viz::CompositorFrame&gt;::Serialize(viz::CompositorFrame&amp;, mojo::internal::Buffer*, viz::mojom::internal::CompositorFrame_Data::BufferWriter*, mojo::internal::SerializationContext*) (1 samples, 2.78%)</title><rect x="436.1" y="469" width="32.8" height="15.0" fill="rgb(249,222,1)" rx="2" ry="2" />
+<text  x="439.11" y="479.5" >mo..</text>
+</g>
+<g >
+<title>mojo::FilterChain::Accept(mojo::Message*) (4 samples, 11.11%)</title><rect x="862.2" y="469" width="131.1" height="15.0" fill="rgb(205,194,21)" rx="2" ry="2" />
+<text  x="865.22" y="479.5" >mojo::FilterChai..</text>
+</g>
+<g >
+<title>cc::TileManager::PrepareTiles(cc::GlobalStateThatImpactsTilePriority const&amp;) (2 samples, 5.56%)</title><rect x="305.0" y="533" width="65.6" height="15.0" fill="rgb(230,55,8)" rx="2" ry="2" />
+<text  x="308.00" y="543.5" >cc::Til..</text>
+</g>
+<g >
+<title>cc::Scheduler::ProcessScheduledActions() (1 samples, 2.78%)</title><rect x="895.0" y="325" width="32.8" height="15.0" fill="rgb(243,43,17)" rx="2" ry="2" />
+<text  x="898.00" y="335.5" >cc..</text>
+</g>
+<g >
+<title>cc::TilingSetRasterQueueAll::TilingSetRasterQueueAll(cc::PictureLayerTilingSet*, bool, bool) (1 samples, 2.78%)</title><rect x="731.1" y="389" width="32.8" height="15.0" fill="rgb(250,6,54)" rx="2" ry="2" />
+<text  x="734.11" y="399.5" >cc..</text>
+</g>
+<g >
+<title>cc::PictureLayerImpl::PushPropertiesTo(cc::LayerImpl*) (1 samples, 2.78%)</title><rect x="600.0" y="469" width="32.8" height="15.0" fill="rgb(243,103,1)" rx="2" ry="2" />
+<text  x="603.00" y="479.5" >cc..</text>
+</g>
+</g>
+</svg>

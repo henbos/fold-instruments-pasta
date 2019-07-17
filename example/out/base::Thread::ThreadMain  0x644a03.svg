@@ -1,0 +1,3089 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="902" onload="init(evt)" viewBox="0 0 1200 902" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="902.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="885" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="885" > </text>
+<g id="frames">
+<g >
+<title>free (1 samples, 0.23%)</title><rect x="549.5" y="277" width="2.7" height="15.0" fill="rgb(242,143,19)" rx="2" ry="2" />
+<text  x="552.50" y="287.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::MoveReadyDelayedTasksToWorkQueues(base::sequence_manager::LazyNow*) (5 samples, 1.13%)</title><rect x="1070.4" y="597" width="13.3" height="15.0" fill="rgb(238,5,54)" rx="2" ry="2" />
+<text  x="1073.41" y="607.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::SendChannelMessage(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (2 samples, 0.45%)</title><rect x="934.9" y="373" width="5.3" height="15.0" fill="rgb(250,216,43)" rx="2" ry="2" />
+<text  x="937.86" y="383.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::PortStatusChanged(mojo::core::ports::PortRef const&amp;) (28 samples, 6.31%)</title><rect x="235.9" y="549" width="74.4" height="15.0" fill="rgb(207,87,8)" rx="2" ry="2" />
+<text  x="238.90" y="559.5" >mojo::co..</text>
+</g>
+<g >
+<title>MojoReadMessage (4 samples, 0.90%)</title><rect x="592.0" y="437" width="10.7" height="15.0" fill="rgb(216,12,36)" rx="2" ry="2" />
+<text  x="595.03" y="447.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (1 samples, 0.23%)</title><rect x="969.4" y="325" width="2.7" height="15.0" fill="rgb(245,123,18)" rx="2" ry="2" />
+<text  x="972.41" y="335.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::RealTimeDomain::DelayTillNextTask(base::sequence_manager::LazyNow*) (3 samples, 0.68%)</title><rect x="977.4" y="613" width="8.0" height="15.0" fill="rgb(242,71,10)" rx="2" ry="2" />
+<text  x="980.39" y="623.5" ></text>
+</g>
+<g >
+<title>mojo::core::Core::AppendMessageData(unsigned long, unsigned int, unsigned int const*, unsigned int, MojoAppendMessageDataOptions const*, void**, unsigned int*) (1 samples, 0.23%)</title><rect x="879.1" y="501" width="2.6" height="15.0" fill="rgb(212,76,30)" rx="2" ry="2" />
+<text  x="882.05" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="1011.9" y="613" width="2.7" height="15.0" fill="rgb(244,22,6)" rx="2" ry="2" />
+<text  x="1014.94" y="623.5" ></text>
+</g>
+<g >
+<title>non-virtual thunk to base::sequence_manager::internal::SequenceManagerImpl::TakeTask() (34 samples, 7.66%)</title><rect x="1035.9" y="645" width="90.3" height="15.0" fill="rgb(250,206,34)" rx="2" ry="2" />
+<text  x="1038.86" y="655.5" >non-virtua..</text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::MachMessageSendLocked(mach_msg_header_t*) (2 samples, 0.45%)</title><rect x="934.9" y="309" width="5.3" height="15.0" fill="rgb(252,184,7)" rx="2" ry="2" />
+<text  x="937.86" y="319.5" ></text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 0.23%)</title><rect x="1033.2" y="613" width="2.7" height="15.0" fill="rgb(212,223,2)" rx="2" ry="2" />
+<text  x="1036.20" y="623.5" ></text>
+</g>
+<g >
+<title>gpu::MailboxHolder::MailboxHolder() (1 samples, 0.23%)</title><rect x="552.2" y="261" width="2.6" height="15.0" fill="rgb(215,71,20)" rx="2" ry="2" />
+<text  x="555.16" y="271.5" ></text>
+</g>
+<g >
+<title>free (1 samples, 0.23%)</title><rect x="589.4" y="293" width="2.6" height="15.0" fill="rgb(234,176,43)" rx="2" ry="2" />
+<text  x="592.37" y="303.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::AtomicFlagSet::RunActiveCallbacks() const (9 samples, 2.03%)</title><rect x="1046.5" y="597" width="23.9" height="15.0" fill="rgb(235,85,26)" rx="2" ry="2" />
+<text  x="1049.49" y="607.5" >b..</text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="996.0" y="597" width="2.6" height="15.0" fill="rgb(234,77,5)" rx="2" ry="2" />
+<text  x="998.99" y="607.5" ></text>
+</g>
+<g >
+<title>mach_msg (1 samples, 0.23%)</title><rect x="584.1" y="85" width="2.6" height="15.0" fill="rgb(227,220,6)" rx="2" ry="2" />
+<text  x="587.05" y="95.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (1 samples, 0.23%)</title><rect x="1059.8" y="533" width="2.6" height="15.0" fill="rgb(241,51,31)" rx="2" ry="2" />
+<text  x="1062.77" y="543.5" ></text>
+</g>
+<g >
+<title>base::internal::RegisteredTaskSource::~RegisteredTaskSource() (1 samples, 0.23%)</title><rect x="403.3" y="469" width="2.7" height="15.0" fill="rgb(234,102,22)" rx="2" ry="2" />
+<text  x="406.33" y="479.5" ></text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::Accept(mojo::Message*) (6 samples, 1.35%)</title><rect x="924.2" y="549" width="16.0" height="15.0" fill="rgb(220,121,53)" rx="2" ry="2" />
+<text  x="927.23" y="559.5" ></text>
+</g>
+<g >
+<title>MojoDestroyMessage (1 samples, 0.23%)</title><rect x="589.4" y="373" width="2.6" height="15.0" fill="rgb(243,134,27)" rx="2" ry="2" />
+<text  x="592.37" y="383.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (1 samples, 0.23%)</title><rect x="440.5" y="437" width="2.7" height="15.0" fill="rgb(224,197,52)" rx="2" ry="2" />
+<text  x="443.54" y="447.5" ></text>
+</g>
+<g >
+<title>IPC::ChannelMojo::Send(IPC::Message*) (9 samples, 2.03%)</title><rect x="857.8" y="597" width="23.9" height="15.0" fill="rgb(205,9,47)" rx="2" ry="2" />
+<text  x="860.79" y="607.5" >I..</text>
+</g>
+<g >
+<title>IPC::internal::MessagePipeReader::Send(std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;) (8 samples, 1.80%)</title><rect x="860.5" y="581" width="21.2" height="15.0" fill="rgb(217,167,38)" rx="2" ry="2" />
+<text  x="863.45" y="591.5" >I..</text>
+</g>
+<g >
+<title>mojo::core::Core::ArmTrap(unsigned int, MojoArmTrapOptions const*, unsigned int*, MojoTrapEvent*) (1 samples, 0.23%)</title><rect x="608.0" y="405" width="2.6" height="15.0" fill="rgb(250,98,35)" rx="2" ry="2" />
+<text  x="610.97" y="415.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::PortLocker::PortLocker(mojo::core::ports::PortRef const**, unsigned long) (2 samples, 0.45%)</title><rect x="305.0" y="517" width="5.3" height="15.0" fill="rgb(253,0,35)" rx="2" ry="2" />
+<text  x="308.00" y="527.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (3 samples, 0.68%)</title><rect x="81.8" y="613" width="7.9" height="15.0" fill="rgb(223,103,44)" rx="2" ry="2" />
+<text  x="84.76" y="623.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 0.23%)</title><rect x="273.1" y="437" width="2.7" height="15.0" fill="rgb(249,159,50)" rx="2" ry="2" />
+<text  x="276.11" y="447.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="185.4" y="597" width="2.7" height="15.0" fill="rgb(248,53,41)" rx="2" ry="2" />
+<text  x="188.41" y="607.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_wake (1 samples, 0.23%)</title><rect x="477.7" y="389" width="2.7" height="15.0" fill="rgb(224,147,27)" rx="2" ry="2" />
+<text  x="480.75" y="399.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::TakeTaskImpl() (34 samples, 7.66%)</title><rect x="1035.9" y="613" width="90.3" height="15.0" fill="rgb(206,207,41)" rx="2" ry="2" />
+<text  x="1038.86" y="623.5" >base::sequ..</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::GetStatus(mojo::core::ports::PortRef const&amp;, mojo::core::ports::PortStatus*) (1 samples, 0.23%)</title><rect x="932.2" y="437" width="2.7" height="15.0" fill="rgb(228,123,35)" rx="2" ry="2" />
+<text  x="935.21" y="447.5" ></text>
+</g>
+<g >
+<title>mojo::core::UserMessageImpl const* mojo::core::ports::UserMessageEvent::GetMessage&lt;mojo::core::UserMessageImpl&gt;() const (1 samples, 0.23%)</title><rect x="286.4" y="453" width="2.7" height="15.0" fill="rgb(229,40,17)" rx="2" ry="2" />
+<text  x="289.40" y="463.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="568.1" y="261" width="2.7" height="15.0" fill="rgb(213,179,22)" rx="2" ry="2" />
+<text  x="571.11" y="271.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (1 samples, 0.23%)</title><rect x="1065.1" y="533" width="2.6" height="15.0" fill="rgb(241,70,17)" rx="2" ry="2" />
+<text  x="1068.09" y="543.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="918.9" y="565" width="2.7" height="15.0" fill="rgb(216,218,13)" rx="2" ry="2" />
+<text  x="921.92" y="575.5" ></text>
+</g>
+<g >
+<title>mojo::SimpleWatcher::ArmOrNotify() (1 samples, 0.23%)</title><rect x="608.0" y="453" width="2.6" height="15.0" fill="rgb(233,143,24)" rx="2" ry="2" />
+<text  x="610.97" y="463.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_unlock_slow (1 samples, 0.23%)</title><rect x="578.7" y="85" width="2.7" height="15.0" fill="rgb(244,29,33)" rx="2" ry="2" />
+<text  x="581.74" y="95.5" ></text>
+</g>
+<g >
+<title>mojo::internal::MessageDispatchContext::~MessageDispatchContext() (1 samples, 0.23%)</title><rect x="533.6" y="341" width="2.6" height="15.0" fill="rgb(209,79,26)" rx="2" ry="2" />
+<text  x="536.56" y="351.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkDeduplicator::DidCheckForMoreWork(base::sequence_manager::internal::WorkDeduplicator::NextTask) (3 samples, 0.68%)</title><rect x="1142.2" y="661" width="7.9" height="15.0" fill="rgb(247,29,5)" rx="2" ry="2" />
+<text  x="1145.16" y="671.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (4 samples, 0.90%)</title><rect x="515.0" y="293" width="10.6" height="15.0" fill="rgb(230,33,7)" rx="2" ry="2" />
+<text  x="517.95" y="303.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 0.23%)</title><rect x="227.9" y="437" width="2.7" height="15.0" fill="rgb(230,224,3)" rx="2" ry="2" />
+<text  x="230.93" y="447.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::DelayTillNextTask(base::sequence_manager::LazyNow*) const (8 samples, 1.80%)</title><rect x="977.4" y="645" width="21.2" height="15.0" fill="rgb(232,56,39)" rx="2" ry="2" />
+<text  x="980.39" y="655.5" >b..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (2 samples, 0.45%)</title><rect x="1054.5" y="565" width="5.3" height="15.0" fill="rgb(211,34,15)" rx="2" ry="2" />
+<text  x="1057.46" y="575.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (IPC::ChannelProxy::Context::*)(std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;), scoped_refptr&lt;IPC::ChannelProxy::Context&gt;, std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt; &gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (1 samples, 0.23%)</title><rect x="855.1" y="629" width="2.7" height="15.0" fill="rgb(228,10,11)" rx="2" ry="2" />
+<text  x="858.14" y="639.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::Validate() (1 samples, 0.23%)</title><rect x="1089.0" y="597" width="2.7" height="15.0" fill="rgb(226,121,52)" rx="2" ry="2" />
+<text  x="1092.01" y="607.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;void (blink::MediaStreamVideoTrack::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), void&gt;::Invoke&lt;void (blink::MediaStreamVideoTrack::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;blink::MediaStreamVideoTrack::FrameDeliverer&gt; const&amp;, scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks&gt;(void (blink::MediaStreamVideoTrack::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;blink::MediaStreamVideoTrack::FrameDeliverer&gt; const&amp;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;, base::TimeTicks&amp;&amp;) (4 samples, 0.90%)</title><rect x="964.1" y="533" width="10.6" height="15.0" fill="rgb(221,120,25)" rx="2" ry="2" />
+<text  x="967.10" y="543.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (2 samples, 0.45%)</title><rect x="934.9" y="437" width="5.3" height="15.0" fill="rgb(211,14,37)" rx="2" ry="2" />
+<text  x="937.86" y="447.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckUnheldAndMark() (1 samples, 0.23%)</title><rect x="1171.4" y="613" width="2.7" height="15.0" fill="rgb(221,16,13)" rx="2" ry="2" />
+<text  x="1174.40" y="623.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostImmediateTaskImpl(base::sequence_manager::internal::PostedTask, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (17 samples, 3.83%)</title><rect x="443.2" y="453" width="45.2" height="15.0" fill="rgb(208,180,21)" rx="2" ry="2" />
+<text  x="446.20" y="463.5" >base..</text>
+</g>
+<g >
+<title>base::internal::TaskTracker::WillQueueTaskSource(scoped_refptr&lt;base::internal::TaskSource&gt;) (1 samples, 0.23%)</title><rect x="411.3" y="469" width="2.7" height="15.0" fill="rgb(232,189,48)" rx="2" ry="2" />
+<text  x="414.31" y="479.5" ></text>
+</g>
+<g >
+<title>base::DictionaryValue::GetDoubleWithoutPathExpansion(base::BasicStringPiece&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, double*) const (1 samples, 0.23%)</title><rect x="974.7" y="533" width="2.7" height="15.0" fill="rgb(210,38,0)" rx="2" ry="2" />
+<text  x="977.73" y="543.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::GetPort(mojo::core::ports::PortName const&amp;, mojo::core::ports::PortRef*) (7 samples, 1.58%)</title><rect x="313.0" y="549" width="18.6" height="15.0" fill="rgb(246,202,15)" rx="2" ry="2" />
+<text  x="315.97" y="559.5" ></text>
+</g>
+<g >
+<title>small_malloc_should_clear (1 samples, 0.23%)</title><rect x="201.4" y="485" width="2.6" height="15.0" fill="rgb(215,189,11)" rx="2" ry="2" />
+<text  x="204.35" y="495.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.23%)</title><rect x="560.1" y="229" width="2.7" height="15.0" fill="rgb(244,226,44)" rx="2" ry="2" />
+<text  x="563.14" y="239.5" ></text>
+</g>
+<g >
+<title>content::VideoCaptureImpl::OnAllClientsFinishedConsumingFrame(int, scoped_refptr&lt;content::VideoCaptureImpl::BufferContext&gt;, double) (8 samples, 1.80%)</title><rect x="921.6" y="581" width="21.2" height="15.0" fill="rgb(243,191,38)" rx="2" ry="2" />
+<text  x="924.58" y="591.5" >c..</text>
+</g>
+<g >
+<title>base::Thread::ThreadMain() (444 samples, 100.00%)</title><rect x="10.0" y="757" width="1180.0" height="15.0" fill="rgb(244,63,39)" rx="2" ry="2" />
+<text  x="13.00" y="767.5" >base::Thread::ThreadMain()</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 0.45%)</title><rect x="1054.5" y="549" width="5.3" height="15.0" fill="rgb(223,65,34)" rx="2" ry="2" />
+<text  x="1057.46" y="559.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 0.23%)</title><rect x="1115.6" y="469" width="2.6" height="15.0" fill="rgb(254,112,23)" rx="2" ry="2" />
+<text  x="1118.59" y="479.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::SinglePortLocker::~SinglePortLocker() (1 samples, 0.23%)</title><rect x="289.1" y="485" width="2.6" height="15.0" fill="rgb(241,9,7)" rx="2" ry="2" />
+<text  x="292.05" y="495.5" ></text>
+</g>
+<g >
+<title>set_tiny_meta_header_in_use (1 samples, 0.23%)</title><rect x="879.1" y="325" width="2.6" height="15.0" fill="rgb(236,156,26)" rx="2" ry="2" />
+<text  x="882.05" y="335.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_unlock_slow (1 samples, 0.23%)</title><rect x="873.7" y="357" width="2.7" height="15.0" fill="rgb(208,121,21)" rx="2" ry="2" />
+<text  x="876.74" y="367.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::UserMessageEvent::Deserialize(mojo::core::ports::PortName const&amp;, void const*, unsigned long) (4 samples, 0.90%)</title><rect x="220.0" y="549" width="10.6" height="15.0" fill="rgb(235,132,43)" rx="2" ry="2" />
+<text  x="222.95" y="559.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 0.45%)</title><rect x="1030.5" y="629" width="5.4" height="15.0" fill="rgb(224,102,46)" rx="2" ry="2" />
+<text  x="1033.54" y="639.5" ></text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::Accept(mojo::Message*) (7 samples, 1.58%)</title><rect x="860.5" y="549" width="18.6" height="15.0" fill="rgb(220,58,42)" rx="2" ry="2" />
+<text  x="863.45" y="559.5" ></text>
+</g>
+<g >
+<title>base::AlignedAlloc(unsigned long, unsigned long) (5 samples, 1.13%)</title><rect x="193.4" y="581" width="13.3" height="15.0" fill="rgb(243,150,53)" rx="2" ry="2" />
+<text  x="196.38" y="591.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 0.23%)</title><rect x="988.0" y="581" width="2.7" height="15.0" fill="rgb(236,163,42)" rx="2" ry="2" />
+<text  x="991.02" y="591.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Unlock() (1 samples, 0.23%)</title><rect x="477.7" y="421" width="2.7" height="15.0" fill="rgb(228,79,41)" rx="2" ry="2" />
+<text  x="480.75" y="431.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::CreateOrExtendSerializedEventMessage(mojo::core::ports::UserMessageEvent*, unsigned long, unsigned long, mojo::core::Dispatcher::DispatcherInTransit const*, unsigned long, std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;*, void**, unsigned long*, void**) (1 samples, 0.23%)</title><rect x="879.1" y="469" width="2.6" height="15.0" fill="rgb(242,207,12)" rx="2" ry="2" />
+<text  x="882.05" y="479.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="1184.7" y="597" width="2.6" height="15.0" fill="rgb(252,20,51)" rx="2" ry="2" />
+<text  x="1187.68" y="607.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="366.1" y="565" width="2.7" height="15.0" fill="rgb(222,91,26)" rx="2" ry="2" />
+<text  x="369.13" y="575.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="597.3" y="357" width="2.7" height="15.0" fill="rgb(242,86,21)" rx="2" ry="2" />
+<text  x="600.34" y="367.5" ></text>
+</g>
+<g >
+<title>mojo::Connector::ReadAllAvailableMessages() (40 samples, 9.01%)</title><rect x="504.3" y="469" width="106.3" height="15.0" fill="rgb(238,102,52)" rx="2" ry="2" />
+<text  x="507.32" y="479.5" >mojo::Connect..</text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (2 samples, 0.45%)</title><rect x="1017.3" y="613" width="5.3" height="15.0" fill="rgb(253,227,6)" rx="2" ry="2" />
+<text  x="1020.25" y="623.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 0.45%)</title><rect x="985.4" y="597" width="5.3" height="15.0" fill="rgb(239,52,26)" rx="2" ry="2" />
+<text  x="988.36" y="607.5" ></text>
+</g>
+<g >
+<title>kevent64 (76 samples, 17.12%)</title><rect x="634.5" y="661" width="202.0" height="15.0" fill="rgb(233,80,41)" rx="2" ry="2" />
+<text  x="637.55" y="671.5" >kevent64</text>
+</g>
+<g >
+<title>mojo::core::WatcherSet::NotifyState(mojo::core::HandleSignalsState const&amp;) (1 samples, 0.23%)</title><rect x="594.7" y="389" width="2.6" height="15.0" fill="rgb(241,55,8)" rx="2" ry="2" />
+<text  x="597.68" y="399.5" ></text>
+</g>
+<g >
+<title>IPC::mojom::internal::Channel_Receive_Params_Data::Channel_Receive_Params_Data() (1 samples, 0.23%)</title><rect x="892.3" y="549" width="2.7" height="15.0" fill="rgb(228,48,28)" rx="2" ry="2" />
+<text  x="895.34" y="559.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::UpdateCrossThreadQueueStateLocked() (3 samples, 0.68%)</title><rect x="1118.2" y="565" width="8.0" height="15.0" fill="rgb(243,86,45)" rx="2" ry="2" />
+<text  x="1121.24" y="575.5" ></text>
+</g>
+<g >
+<title>base::MessagePumpKqueue::DoInternalWork(base::MessagePump::Delegate::NextWorkInfo*) (306 samples, 68.92%)</title><rect x="23.3" y="677" width="813.2" height="15.0" fill="rgb(234,40,45)" rx="2" ry="2" />
+<text  x="26.29" y="687.5" >base::MessagePumpKqueue::DoInternalWork(base::MessagePump::Delegate::NextWorkInfo*)</text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::Accept(mojo::Message*) (1 samples, 0.23%)</title><rect x="855.1" y="549" width="2.7" height="15.0" fill="rgb(225,218,45)" rx="2" ry="2" />
+<text  x="858.14" y="559.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_wake (1 samples, 0.23%)</title><rect x="873.7" y="341" width="2.7" height="15.0" fill="rgb(253,139,13)" rx="2" ry="2" />
+<text  x="876.74" y="351.5" ></text>
+</g>
+<g >
+<title>default_zone_memalign (1 samples, 0.23%)</title><rect x="204.0" y="517" width="2.7" height="15.0" fill="rgb(225,23,30)" rx="2" ry="2" />
+<text  x="207.01" y="527.5" ></text>
+</g>
+<g >
+<title>mojo::ScopedInterfaceEndpointHandle::pending_association() const (1 samples, 0.23%)</title><rect x="913.6" y="533" width="2.7" height="15.0" fill="rgb(207,135,36)" rx="2" ry="2" />
+<text  x="916.60" y="543.5" ></text>
+</g>
+<g >
+<title>IPC::ChannelMojo::Send(IPC::Message*) (13 samples, 2.93%)</title><rect x="884.4" y="597" width="34.5" height="15.0" fill="rgb(236,30,42)" rx="2" ry="2" />
+<text  x="887.37" y="607.5" >IP..</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (2 samples, 0.45%)</title><rect x="71.1" y="581" width="5.3" height="15.0" fill="rgb(212,85,9)" rx="2" ry="2" />
+<text  x="74.13" y="591.5" ></text>
+</g>
+<g >
+<title>mojo::internal::MessageDispatchContext::MessageDispatchContext(mojo::Message*) (1 samples, 0.23%)</title><rect x="530.9" y="341" width="2.7" height="15.0" fill="rgb(222,5,45)" rx="2" ry="2" />
+<text  x="533.90" y="351.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::TakeTask() (34 samples, 7.66%)</title><rect x="1035.9" y="629" width="90.3" height="15.0" fill="rgb(225,48,18)" rx="2" ry="2" />
+<text  x="1038.86" y="639.5" >base::sequ..</text>
+</g>
+<g >
+<title>base::internal::RegisteredTaskSource::operator=(base::internal::RegisteredTaskSource&amp;&amp;) (2 samples, 0.45%)</title><rect x="398.0" y="405" width="5.3" height="15.0" fill="rgb(206,64,29)" rx="2" ry="2" />
+<text  x="401.02" y="415.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::MaybeAdjustTaskDelay(base::sequence_manager::internal::PostedTask*, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (1 samples, 0.23%)</title><rect x="440.5" y="453" width="2.7" height="15.0" fill="rgb(214,116,25)" rx="2" ry="2" />
+<text  x="443.54" y="463.5" ></text>
+</g>
+<g >
+<title>_pthread_body (444 samples, 100.00%)</title><rect x="10.0" y="789" width="1180.0" height="15.0" fill="rgb(228,68,30)" rx="2" ry="2" />
+<text  x="13.00" y="799.5" >_pthread_body</text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 0.23%)</title><rect x="1115.6" y="517" width="2.6" height="15.0" fill="rgb(245,6,21)" rx="2" ry="2" />
+<text  x="1118.59" y="527.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="1139.5" y="629" width="2.7" height="15.0" fill="rgb(226,97,4)" rx="2" ry="2" />
+<text  x="1142.50" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="942.8" y="549" width="2.7" height="15.0" fill="rgb(247,208,8)" rx="2" ry="2" />
+<text  x="945.84" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::Core::WriteMessage(unsigned int, unsigned long, MojoWriteMessageOptions const*) (7 samples, 1.58%)</title><rect x="895.0" y="469" width="18.6" height="15.0" fill="rgb(233,220,20)" rx="2" ry="2" />
+<text  x="898.00" y="479.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::Write(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (5 samples, 1.13%)</title><rect x="897.7" y="325" width="13.2" height="15.0" fill="rgb(237,95,7)" rx="2" ry="2" />
+<text  x="900.66" y="335.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="233.2" y="565" width="2.7" height="15.0" fill="rgb(251,7,33)" rx="2" ry="2" />
+<text  x="236.24" y="575.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="1049.1" y="565" width="2.7" height="15.0" fill="rgb(221,80,34)" rx="2" ry="2" />
+<text  x="1052.14" y="575.5" ></text>
+</g>
+<g >
+<title>kevent64 (1 samples, 0.23%)</title><rect x="1155.5" y="677" width="2.6" height="15.0" fill="rgb(208,118,30)" rx="2" ry="2" />
+<text  x="1158.45" y="687.5" ></text>
+</g>
+<g >
+<title>mojo::core::RequestContext::RequestContext(mojo::core::RequestContext::Source) (4 samples, 0.90%)</title><rect x="344.9" y="597" width="10.6" height="15.0" fill="rgb(214,125,21)" rx="2" ry="2" />
+<text  x="347.86" y="607.5" ></text>
+</g>
+<g >
+<title>base::internal::CallbackBase::~CallbackBase() (1 samples, 0.23%)</title><rect x="379.4" y="517" width="2.7" height="15.0" fill="rgb(224,101,38)" rx="2" ry="2" />
+<text  x="382.41" y="527.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (7 samples, 1.58%)</title><rect x="414.0" y="453" width="18.6" height="15.0" fill="rgb(225,45,3)" rx="2" ry="2" />
+<text  x="416.96" y="463.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::GetStatus(mojo::core::ports::PortRef const&amp;, mojo::core::ports::PortStatus*) (1 samples, 0.23%)</title><rect x="289.1" y="501" width="2.6" height="15.0" fill="rgb(249,93,33)" rx="2" ry="2" />
+<text  x="292.05" y="511.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoWorkImpl(base::sequence_manager::LazyNow*, bool*) (106 samples, 23.87%)</title><rect x="844.5" y="661" width="281.7" height="15.0" fill="rgb(215,226,41)" rx="2" ry="2" />
+<text  x="847.50" y="671.5" >base::sequence_manager::internal::Thr..</text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::WriteMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (5 samples, 1.13%)</title><rect x="926.9" y="469" width="13.3" height="15.0" fill="rgb(229,42,46)" rx="2" ry="2" />
+<text  x="929.89" y="479.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 0.23%)</title><rect x="1174.1" y="613" width="2.6" height="15.0" fill="rgb(246,31,3)" rx="2" ry="2" />
+<text  x="1177.05" y="623.5" ></text>
+</g>
+<g >
+<title>mach_absolute_time (2 samples, 0.45%)</title><rect x="980.0" y="565" width="5.4" height="15.0" fill="rgb(207,228,52)" rx="2" ry="2" />
+<text  x="983.05" y="575.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() (5 samples, 1.13%)</title><rect x="1091.7" y="597" width="13.3" height="15.0" fill="rgb(205,5,46)" rx="2" ry="2" />
+<text  x="1094.67" y="607.5" ></text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::InterfaceEndpoint::SendMessage(mojo::Message*) (5 samples, 1.13%)</title><rect x="926.9" y="533" width="13.3" height="15.0" fill="rgb(214,117,5)" rx="2" ry="2" />
+<text  x="929.89" y="543.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;void (content::MediaStreamVideoWebRtcSink::WebRtcVideoSourceAdapter::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), void&gt;::Invoke&lt;void (content::MediaStreamVideoWebRtcSink::WebRtcVideoSourceAdapter::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;content::MediaStreamVideoWebRtcSink::WebRtcVideoSourceAdapter&gt; const&amp;, scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks&gt;(void (content::MediaStreamVideoWebRtcSink::WebRtcVideoSourceAdapter::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;content::MediaStreamVideoWebRtcSink::WebRtcVideoSourceAdapter&gt; const&amp;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;, base::TimeTicks&amp;&amp;) (4 samples, 0.90%)</title><rect x="578.7" y="213" width="10.7" height="15.0" fill="rgb(216,160,25)" rx="2" ry="2" />
+<text  x="581.74" y="223.5" ></text>
+</g>
+<g >
+<title>base::LazyInstance&lt;base::ThreadLocalPointer&lt;mojo::core::RequestContext&gt;, base::internal::LeakyLazyInstanceTraits&lt;base::ThreadLocalPointer&lt;mojo::core::RequestContext&gt; &gt; &gt;::Pointer() (2 samples, 0.45%)</title><rect x="347.5" y="581" width="5.3" height="15.0" fill="rgb(240,227,35)" rx="2" ry="2" />
+<text  x="350.52" y="591.5" ></text>
+</g>
+<g >
+<title>content::VideoCaptureImpl::OnBufferReady(int, mojo::StructPtr&lt;media::mojom::VideoFrameInfo&gt;) (17 samples, 3.83%)</title><rect x="544.2" y="325" width="45.2" height="15.0" fill="rgb(233,205,34)" rx="2" ry="2" />
+<text  x="547.19" y="335.5" >cont..</text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 0.23%)</title><rect x="507.0" y="437" width="2.6" height="15.0" fill="rgb(218,197,30)" rx="2" ry="2" />
+<text  x="509.98" y="447.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (3 samples, 0.68%)</title><rect x="570.8" y="133" width="7.9" height="15.0" fill="rgb(242,161,30)" rx="2" ry="2" />
+<text  x="573.77" y="143.5" ></text>
+</g>
+<g >
+<title>base::SequenceToken::IsValid() const (1 samples, 0.23%)</title><rect x="65.8" y="613" width="2.7" height="15.0" fill="rgb(246,219,0)" rx="2" ry="2" />
+<text  x="68.81" y="623.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 0.23%)</title><rect x="1115.6" y="501" width="2.6" height="15.0" fill="rgb(251,66,41)" rx="2" ry="2" />
+<text  x="1118.59" y="511.5" ></text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::HandleIncomingMessage(mojo::Message*) (9 samples, 2.03%)</title><rect x="512.3" y="405" width="23.9" height="15.0" fill="rgb(245,135,10)" rx="2" ry="2" />
+<text  x="515.30" y="415.5" >m..</text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (6 samples, 1.35%)</title><rect x="860.5" y="437" width="15.9" height="15.0" fill="rgb(223,217,26)" rx="2" ry="2" />
+<text  x="863.45" y="447.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostTask(base::sequence_manager::internal::PostedTask) (3 samples, 0.68%)</title><rect x="570.8" y="101" width="7.9" height="15.0" fill="rgb(234,164,51)" rx="2" ry="2" />
+<text  x="573.77" y="111.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 0.23%)</title><rect x="879.1" y="357" width="2.6" height="15.0" fill="rgb(212,181,1)" rx="2" ry="2" />
+<text  x="882.05" y="367.5" ></text>
+</g>
+<g >
+<title>mojo::Message::Message(unsigned int, unsigned int, unsigned long, unsigned long, std::__Cr::vector&lt;mojo::ScopedHandleBase&lt;mojo::Handle&gt;, std::__Cr::allocator&lt;mojo::ScopedHandleBase&lt;mojo::Handle&gt; &gt; &gt;*) (1 samples, 0.23%)</title><rect x="879.1" y="549" width="2.6" height="15.0" fill="rgb(225,173,41)" rx="2" ry="2" />
+<text  x="882.05" y="559.5" ></text>
+</g>
+<g >
+<title>content::MediaStreamVideoWebRtcSink::WebRtcVideoSourceAdapter::OnVideoFrameOnIO(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks) (4 samples, 0.90%)</title><rect x="578.7" y="197" width="10.7" height="15.0" fill="rgb(227,53,15)" rx="2" ry="2" />
+<text  x="581.74" y="207.5" ></text>
+</g>
+<g >
+<title>MojoCreateMessage (1 samples, 0.23%)</title><rect x="916.3" y="533" width="2.6" height="15.0" fill="rgb(247,54,18)" rx="2" ry="2" />
+<text  x="919.26" y="543.5" ></text>
+</g>
+<g >
+<title>tiny_free_no_lock (1 samples, 0.23%)</title><rect x="530.9" y="293" width="2.7" height="15.0" fill="rgb(213,123,54)" rx="2" ry="2" />
+<text  x="533.90" y="303.5" ></text>
+</g>
+<g >
+<title>base::internal::WeakReference::IsValid() const (2 samples, 0.45%)</title><rect x="942.8" y="597" width="5.4" height="15.0" fill="rgb(240,6,0)" rx="2" ry="2" />
+<text  x="945.84" y="607.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueSelector::GetHighestPendingPriority() const (2 samples, 0.45%)</title><rect x="993.3" y="629" width="5.3" height="15.0" fill="rgb(239,38,25)" rx="2" ry="2" />
+<text  x="996.33" y="639.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 0.23%)</title><rect x="879.1" y="421" width="2.6" height="15.0" fill="rgb(232,3,16)" rx="2" ry="2" />
+<text  x="882.05" y="431.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="512.3" y="373" width="2.7" height="15.0" fill="rgb(253,161,42)" rx="2" ry="2" />
+<text  x="515.30" y="383.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;void (blink::MediaStreamRemoteVideoSource::RemoteVideoSourceDelegate::*)(scoped_refptr&lt;media::VideoFrame&gt;), void&gt;::Invoke&lt;void (blink::MediaStreamRemoteVideoSource::RemoteVideoSourceDelegate::*)(scoped_refptr&lt;media::VideoFrame&gt;), scoped_refptr&lt;blink::MediaStreamRemoteVideoSource::RemoteVideoSourceDelegate&gt;, scoped_refptr&lt;media::VideoFrame&gt; &gt;(void (blink::MediaStreamRemoteVideoSource::RemoteVideoSourceDelegate::*)(scoped_refptr&lt;media::VideoFrame&gt;), scoped_refptr&lt;blink::MediaStreamRemoteVideoSource::RemoteVideoSourceDelegate&gt;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;) (7 samples, 1.58%)</title><rect x="958.8" y="629" width="18.6" height="15.0" fill="rgb(236,210,12)" rx="2" ry="2" />
+<text  x="961.78" y="639.5" ></text>
+</g>
+<g >
+<title>mojo::core::WatcherSet::NotifyState(mojo::core::HandleSignalsState const&amp;) (12 samples, 2.70%)</title><rect x="246.5" y="501" width="31.9" height="15.0" fill="rgb(242,7,48)" rx="2" ry="2" />
+<text  x="249.53" y="511.5" >mo..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;::push_back(base::sequence_manager::Task) (1 samples, 0.23%)</title><rect x="586.7" y="101" width="2.7" height="15.0" fill="rgb(242,151,36)" rx="2" ry="2" />
+<text  x="589.71" y="111.5" ></text>
+</g>
+<g >
+<title>mojo::core::Core::ReadMessage(unsigned int, MojoReadMessageOptions const*, unsigned long*) (4 samples, 0.90%)</title><rect x="592.0" y="421" width="10.7" height="15.0" fill="rgb(248,124,10)" rx="2" ry="2" />
+<text  x="595.03" y="431.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 0.23%)</title><rect x="945.5" y="549" width="2.7" height="15.0" fill="rgb(242,100,23)" rx="2" ry="2" />
+<text  x="948.50" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 0.23%)</title><rect x="855.1" y="437" width="2.7" height="15.0" fill="rgb(247,125,48)" rx="2" ry="2" />
+<text  x="858.14" y="447.5" ></text>
+</g>
+<g >
+<title>base::internal::SequenceLocalStorageMap::Set(int, base::internal::SequenceLocalStorageMap::ValueDestructorPair) (1 samples, 0.23%)</title><rect x="533.6" y="325" width="2.6" height="15.0" fill="rgb(249,76,22)" rx="2" ry="2" />
+<text  x="536.56" y="335.5" ></text>
+</g>
+<g >
+<title>IPC::mojom::ChannelStubDispatch::Accept(IPC::mojom::Channel*, mojo::Message*) (8 samples, 1.80%)</title><rect x="515.0" y="357" width="21.2" height="15.0" fill="rgb(213,25,29)" rx="2" ry="2" />
+<text  x="517.95" y="367.5" >I..</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.23%)</title><rect x="945.5" y="533" width="2.7" height="15.0" fill="rgb(220,99,43)" rx="2" ry="2" />
+<text  x="948.50" y="543.5" ></text>
+</g>
+<g >
+<title>mojo::FilterChain::Accept(mojo::Message*) (19 samples, 4.28%)</title><rect x="538.9" y="373" width="50.5" height="15.0" fill="rgb(239,12,40)" rx="2" ry="2" />
+<text  x="541.87" y="383.5" >mojo:..</text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::SendChannelMessage(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (4 samples, 0.90%)</title><rect x="863.1" y="357" width="10.6" height="15.0" fill="rgb(221,77,3)" rx="2" ry="2" />
+<text  x="866.11" y="367.5" ></text>
+</g>
+<g >
+<title>base::internal::PooledSingleThreadTaskRunnerManager::PooledSingleThreadTaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (2 samples, 0.45%)</title><rect x="948.2" y="517" width="5.3" height="15.0" fill="rgb(217,191,47)" rx="2" ry="2" />
+<text  x="951.15" y="527.5" ></text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::OnPortStatusChanged() (23 samples, 5.18%)</title><rect x="238.6" y="517" width="61.1" height="15.0" fill="rgb(218,111,16)" rx="2" ry="2" />
+<text  x="241.56" y="527.5" >mojo::..</text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (3 samples, 0.68%)</title><rect x="570.8" y="69" width="7.9" height="15.0" fill="rgb(222,215,25)" rx="2" ry="2" />
+<text  x="573.77" y="79.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::LazyNow::Now() (1 samples, 0.23%)</title><rect x="1075.7" y="565" width="2.7" height="15.0" fill="rgb(212,106,42)" rx="2" ry="2" />
+<text  x="1078.72" y="575.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_8::__invoke(_malloc_zone_t*, unsigned long, unsigned long) (1 samples, 0.23%)</title><rect x="196.0" y="517" width="2.7" height="15.0" fill="rgb(245,151,21)" rx="2" ry="2" />
+<text  x="199.04" y="527.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;::push_back(base::sequence_manager::Task) (2 samples, 0.45%)</title><rect x="480.4" y="437" width="5.3" height="15.0" fill="rgb(249,99,54)" rx="2" ry="2" />
+<text  x="483.41" y="447.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::Run(bool, base::TimeDelta) (444 samples, 100.00%)</title><rect x="10.0" y="709" width="1180.0" height="15.0" fill="rgb(245,211,31)" rx="2" ry="2" />
+<text  x="13.00" y="719.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::Run(bool, base::TimeDelta)</text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 0.23%)</title><rect x="512.3" y="389" width="2.7" height="15.0" fill="rgb(208,49,3)" rx="2" ry="2" />
+<text  x="515.30" y="399.5" ></text>
+</g>
+<g >
+<title>base::IDMap&lt;base::MessagePumpKqueue::MachPortWatchController*, int&gt;::Lookup(int) const (16 samples, 3.60%)</title><rect x="49.9" y="645" width="42.5" height="15.0" fill="rgb(243,159,26)" rx="2" ry="2" />
+<text  x="52.86" y="655.5" >base..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::ReloadEmptyImmediateWorkQueue() (6 samples, 1.35%)</title><rect x="1054.5" y="581" width="15.9" height="15.0" fill="rgb(247,194,23)" rx="2" ry="2" />
+<text  x="1057.46" y="591.5" ></text>
+</g>
+<g >
+<title>pthread_self (1 samples, 0.23%)</title><rect x="1051.8" y="565" width="2.7" height="15.0" fill="rgb(217,113,51)" rx="2" ry="2" />
+<text  x="1054.80" y="575.5" ></text>
+</g>
+<g >
+<title>mojo::core::RequestContext::~RequestContext() (1 samples, 0.23%)</title><rect x="363.5" y="581" width="2.6" height="15.0" fill="rgb(232,150,8)" rx="2" ry="2" />
+<text  x="366.47" y="591.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostImmediateTaskImpl(base::sequence_manager::internal::PostedTask, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (3 samples, 0.68%)</title><rect x="570.8" y="85" width="7.9" height="15.0" fill="rgb(211,102,30)" rx="2" ry="2" />
+<text  x="573.77" y="95.5" ></text>
+</g>
+<g >
+<title>IPC::ChannelMojo::OnMessageReceived(IPC::Message const&amp;) (4 samples, 0.90%)</title><rect x="515.0" y="325" width="10.6" height="15.0" fill="rgb(208,44,35)" rx="2" ry="2" />
+<text  x="517.95" y="335.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_8::__invoke(_malloc_zone_t*, unsigned long, unsigned long) (2 samples, 0.45%)</title><rect x="198.7" y="517" width="5.3" height="15.0" fill="rgb(217,172,11)" rx="2" ry="2" />
+<text  x="201.69" y="527.5" ></text>
+</g>
+<g >
+<title>mojo::core::WatcherDispatcher::InvokeWatchCallback(unsigned long, unsigned int, mojo::core::HandleSignalsState const&amp;, unsigned int) (92 samples, 20.72%)</title><rect x="368.8" y="565" width="244.5" height="15.0" fill="rgb(214,151,32)" rx="2" ry="2" />
+<text  x="371.78" y="575.5" >mojo::core::WatcherDispatcher::I..</text>
+</g>
+<g >
+<title>malloc (2 samples, 0.45%)</title><rect x="225.3" y="517" width="5.3" height="15.0" fill="rgb(245,22,8)" rx="2" ry="2" />
+<text  x="228.27" y="527.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_9::__invoke(_malloc_zone_t*, void*, unsigned long) (1 samples, 0.23%)</title><rect x="541.5" y="325" width="2.7" height="15.0" fill="rgb(209,176,15)" rx="2" ry="2" />
+<text  x="544.53" y="335.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (11 samples, 2.48%)</title><rect x="448.5" y="405" width="29.2" height="15.0" fill="rgb(218,119,26)" rx="2" ry="2" />
+<text  x="451.51" y="415.5" >ma..</text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;void (blink::VideoTrackAdapter::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), void&gt;::Invoke&lt;void (blink::VideoTrackAdapter::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;blink::VideoTrackAdapter&gt; const&amp;, scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks&gt;(void (blink::VideoTrackAdapter::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;blink::VideoTrackAdapter&gt; const&amp;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;, base::TimeTicks&amp;&amp;) (10 samples, 2.25%)</title><rect x="562.8" y="309" width="26.6" height="15.0" fill="rgb(249,227,48)" rx="2" ry="2" />
+<text  x="565.79" y="319.5" >v..</text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 0.23%)</title><rect x="1054.5" y="533" width="2.6" height="15.0" fill="rgb(241,101,42)" rx="2" ry="2" />
+<text  x="1057.46" y="543.5" ></text>
+</g>
+<g >
+<title>mach_msg (1 samples, 0.23%)</title><rect x="581.4" y="85" width="2.7" height="15.0" fill="rgb(219,88,41)" rx="2" ry="2" />
+<text  x="584.40" y="95.5" ></text>
+</g>
+<g >
+<title>DYLD-STUB$$IPC::MessageView::~MessageView() (1 samples, 0.23%)</title><rect x="857.8" y="581" width="2.7" height="15.0" fill="rgb(216,75,32)" rx="2" ry="2" />
+<text  x="860.79" y="591.5" ></text>
+</g>
+<g >
+<title>mojo::Connector::Accept(mojo::Message*) (7 samples, 1.58%)</title><rect x="860.5" y="501" width="18.6" height="15.0" fill="rgb(225,212,27)" rx="2" ry="2" />
+<text  x="863.45" y="511.5" ></text>
+</g>
+<g >
+<title>media::VideoFrame::WrapExternalStorage(media::VideoFrame::StorageType, media::VideoFrameLayout const&amp;, gfx::Rect const&amp;, gfx::Size const&amp;, unsigned char*, unsigned long, base::TimeDelta, base::ReadOnlySharedMemoryRegion*, base::UnsafeSharedMemoryRegion*, base::SharedMemoryHandle, unsigned long) (1 samples, 0.23%)</title><rect x="552.2" y="293" width="2.6" height="15.0" fill="rgb(222,48,37)" rx="2" ry="2" />
+<text  x="555.16" y="303.5" ></text>
+</g>
+<g >
+<title>base::SequenceToken::IsValid() const (1 samples, 0.23%)</title><rect x="924.2" y="517" width="2.7" height="15.0" fill="rgb(240,129,36)" rx="2" ry="2" />
+<text  x="927.23" y="527.5" ></text>
+</g>
+<g >
+<title>base::GetProgramCounter() (1 samples, 0.23%)</title><rect x="1078.4" y="533" width="2.6" height="15.0" fill="rgb(220,164,15)" rx="2" ry="2" />
+<text  x="1081.38" y="543.5" ></text>
+</g>
+<g >
+<title>blink::MediaStreamVideoTrack::FrameDeliverer::DeliverFrameOnIO(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks) (7 samples, 1.58%)</title><rect x="570.8" y="229" width="18.6" height="15.0" fill="rgb(230,61,11)" rx="2" ry="2" />
+<text  x="573.77" y="239.5" ></text>
+</g>
+<g >
+<title>base::GetProgramCounter() (1 samples, 0.23%)</title><rect x="512.3" y="341" width="2.7" height="15.0" fill="rgb(222,171,44)" rx="2" ry="2" />
+<text  x="515.30" y="351.5" ></text>
+</g>
+<g >
+<title>content::WebMediaPlayerMS::FrameDeliverer::OnVideoFrame(scoped_refptr&lt;media::VideoFrame&gt;) (3 samples, 0.68%)</title><rect x="966.8" y="453" width="7.9" height="15.0" fill="rgb(248,66,21)" rx="2" ry="2" />
+<text  x="969.76" y="463.5" ></text>
+</g>
+<g >
+<title>mach_msg (1 samples, 0.23%)</title><rect x="969.4" y="341" width="2.7" height="15.0" fill="rgb(225,1,1)" rx="2" ry="2" />
+<text  x="972.41" y="351.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GetQueuePriority() const (1 samples, 0.23%)</title><rect x="1105.0" y="597" width="2.6" height="15.0" fill="rgb(232,184,53)" rx="2" ry="2" />
+<text  x="1107.95" y="607.5" ></text>
+</g>
+<g >
+<title>blink::VideoTrackAdapter::DeliverFrameOnIO(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks) (7 samples, 1.58%)</title><rect x="958.8" y="581" width="18.6" height="15.0" fill="rgb(207,24,0)" rx="2" ry="2" />
+<text  x="961.78" y="591.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::PortLocker::PortLocker(mojo::core::ports::PortRef const**, unsigned long) (1 samples, 0.23%)</title><rect x="241.2" y="469" width="2.7" height="15.0" fill="rgb(219,21,45)" rx="2" ry="2" />
+<text  x="244.22" y="479.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (6 samples, 1.35%)</title><rect x="1126.2" y="645" width="16.0" height="15.0" fill="rgb(205,25,10)" rx="2" ry="2" />
+<text  x="1129.22" y="655.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::MessageQueue::GetNextMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*, mojo::core::ports::MessageFilter*) (2 samples, 0.45%)</title><rect x="283.7" y="485" width="5.4" height="15.0" fill="rgb(223,40,17)" rx="2" ry="2" />
+<text  x="286.74" y="495.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (7 samples, 1.58%)</title><rect x="615.9" y="597" width="18.6" height="15.0" fill="rgb(213,170,50)" rx="2" ry="2" />
+<text  x="618.95" y="607.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (5 samples, 1.13%)</title><rect x="1091.7" y="581" width="13.3" height="15.0" fill="rgb(238,135,8)" rx="2" ry="2" />
+<text  x="1094.67" y="591.5" ></text>
+</g>
+<g >
+<title>base::debug::GlobalActivityTracker::ScopedThreadActivity::~ScopedThreadActivity() (1 samples, 0.23%)</title><rect x="1134.2" y="613" width="2.6" height="15.0" fill="rgb(219,43,41)" rx="2" ry="2" />
+<text  x="1137.19" y="623.5" ></text>
+</g>
+<g >
+<title>blink::MediaStreamRemoteVideoSource::RemoteVideoSourceDelegate::DoRenderFrameOnIOThread(scoped_refptr&lt;media::VideoFrame&gt;) (7 samples, 1.58%)</title><rect x="958.8" y="613" width="18.6" height="15.0" fill="rgb(215,173,14)" rx="2" ry="2" />
+<text  x="961.78" y="623.5" ></text>
+</g>
+<g >
+<title>std::__Cr::basic_streambuf&lt;char, std::__Cr::char_traits&lt;char&gt; &gt;::~basic_streambuf() (1 samples, 0.23%)</title><rect x="334.2" y="549" width="2.7" height="15.0" fill="rgb(247,71,19)" rx="2" ry="2" />
+<text  x="337.23" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::Channel::TryDispatchMessage(base::span&lt;char const, 18446744073709551615ul&gt;, unsigned long*) (174 samples, 39.19%)</title><rect x="172.1" y="629" width="462.4" height="15.0" fill="rgb(230,115,33)" rx="2" ry="2" />
+<text  x="175.12" y="639.5" >mojo::core::Channel::TryDispatchMessage(base::span&lt;char const, ..</text>
+</g>
+<g >
+<title>base::internal::CallbackBase::IsCancelled() const (1 samples, 0.23%)</title><rect x="1115.6" y="565" width="2.6" height="15.0" fill="rgb(222,225,43)" rx="2" ry="2" />
+<text  x="1118.59" y="575.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.23%)</title><rect x="305.0" y="485" width="2.7" height="15.0" fill="rgb(233,31,34)" rx="2" ry="2" />
+<text  x="308.00" y="495.5" ></text>
+</g>
+<g >
+<title>IPC::(anonymous namespace)::ChannelAssociatedGroupController::Endpoint::SendMessage(mojo::Message*) (1 samples, 0.23%)</title><rect x="855.1" y="533" width="2.7" height="15.0" fill="rgb(239,41,54)" rx="2" ry="2" />
+<text  x="858.14" y="543.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (content::VideoCaptureImpl::*)(int, scoped_refptr&lt;content::VideoCaptureImpl::BufferContext&gt;, double), base::WeakPtr&lt;content::VideoCaptureImpl&gt;, int, scoped_refptr&lt;content::VideoCaptureImpl::BufferContext&gt; &gt;, void (double)&gt;::RunOnce(base::internal::BindStateBase*, double) (9 samples, 2.03%)</title><rect x="918.9" y="613" width="23.9" height="15.0" fill="rgb(212,99,18)" rx="2" ry="2" />
+<text  x="921.92" y="623.5" >b..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.23%)</title><rect x="879.1" y="389" width="2.6" height="15.0" fill="rgb(230,52,14)" rx="2" ry="2" />
+<text  x="882.05" y="399.5" ></text>
+</g>
+<g >
+<title>mojo::core::RequestContext::~RequestContext() (97 samples, 21.85%)</title><rect x="355.5" y="597" width="257.8" height="15.0" fill="rgb(221,34,7)" rx="2" ry="2" />
+<text  x="358.50" y="607.5" >mojo::core::RequestContext::~Reque..</text>
+</g>
+<g >
+<title>MojoArmTrap (1 samples, 0.23%)</title><rect x="608.0" y="421" width="2.6" height="15.0" fill="rgb(249,169,22)" rx="2" ry="2" />
+<text  x="610.97" y="431.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (4 samples, 0.90%)</title><rect x="1171.4" y="629" width="10.6" height="15.0" fill="rgb(205,144,25)" rx="2" ry="2" />
+<text  x="1174.40" y="639.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoIdleWork() (10 samples, 2.25%)</title><rect x="1160.8" y="661" width="26.5" height="15.0" fill="rgb(247,49,34)" rx="2" ry="2" />
+<text  x="1163.77" y="671.5" >b..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (3 samples, 0.68%)</title><rect x="1118.2" y="533" width="8.0" height="15.0" fill="rgb(247,146,19)" rx="2" ry="2" />
+<text  x="1121.24" y="543.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 0.23%)</title><rect x="273.1" y="389" width="2.7" height="15.0" fill="rgb(234,7,52)" rx="2" ry="2" />
+<text  x="276.11" y="399.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::UpdateCrossThreadQueueStateLocked() (1 samples, 0.23%)</title><rect x="1062.4" y="533" width="2.7" height="15.0" fill="rgb(211,190,16)" rx="2" ry="2" />
+<text  x="1065.43" y="543.5" ></text>
+</g>
+<g >
+<title>mojo::SimpleWatcher::Context::Notify(unsigned int, MojoHandleSignalsState, unsigned int) (86 samples, 19.37%)</title><rect x="382.1" y="533" width="228.5" height="15.0" fill="rgb(235,51,37)" rx="2" ry="2" />
+<text  x="385.07" y="543.5" >mojo::SimpleWatcher::Context::..</text>
+</g>
+<g >
+<title>base::GetProgramCounter() (1 samples, 0.23%)</title><rect x="87.1" y="597" width="2.6" height="15.0" fill="rgb(228,58,25)" rx="2" ry="2" />
+<text  x="90.07" y="607.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 0.23%)</title><rect x="273.1" y="373" width="2.7" height="15.0" fill="rgb(213,20,34)" rx="2" ry="2" />
+<text  x="276.11" y="383.5" ></text>
+</g>
+<g >
+<title>mojo::core::UserMessageImpl::AppendData(unsigned int, unsigned int const*, unsigned int) (1 samples, 0.23%)</title><rect x="879.1" y="485" width="2.6" height="15.0" fill="rgb(225,67,45)" rx="2" ry="2" />
+<text  x="882.05" y="495.5" ></text>
+</g>
+<g >
+<title>_platform_memcmp (1 samples, 0.23%)</title><rect x="974.7" y="485" width="2.7" height="15.0" fill="rgb(243,12,49)" rx="2" ry="2" />
+<text  x="977.73" y="495.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::OnUserMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 0.23%)</title><rect x="209.3" y="565" width="2.7" height="15.0" fill="rgb(210,117,0)" rx="2" ry="2" />
+<text  x="212.32" y="575.5" ></text>
+</g>
+<g >
+<title>base::debug::ScopedLockAcquireActivity::ScopedLockAcquireActivity(void const*, base::internal::LockImpl const*) (1 samples, 0.23%)</title><rect x="1136.8" y="613" width="2.7" height="15.0" fill="rgb(242,199,7)" rx="2" ry="2" />
+<text  x="1139.85" y="623.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::GetPort(mojo::core::ports::PortName const&amp;, mojo::core::ports::PortRef*) (1 samples, 0.23%)</title><rect x="233.2" y="549" width="2.7" height="15.0" fill="rgb(225,203,48)" rx="2" ry="2" />
+<text  x="236.24" y="559.5" ></text>
+</g>
+<g >
+<title>media::VideoFrame::VideoFrame(media::VideoFrameLayout const&amp;, media::VideoFrame::StorageType, gfx::Rect const&amp;, gfx::Size const&amp;, base::TimeDelta) (1 samples, 0.23%)</title><rect x="552.2" y="277" width="2.6" height="15.0" fill="rgb(246,87,11)" rx="2" ry="2" />
+<text  x="555.16" y="287.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueSelector::SelectWorkQueueToService() (2 samples, 0.45%)</title><rect x="1107.6" y="597" width="5.3" height="15.0" fill="rgb(253,191,27)" rx="2" ry="2" />
+<text  x="1110.61" y="607.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.23%)</title><rect x="68.5" y="597" width="2.6" height="15.0" fill="rgb(222,119,45)" rx="2" ry="2" />
+<text  x="71.47" y="607.5" ></text>
+</g>
+<g >
+<title>base::TaskAnnotator::WillQueueTask(char const*, base::PendingTask*, char const*) (2 samples, 0.45%)</title><rect x="443.2" y="437" width="5.3" height="15.0" fill="rgb(249,33,41)" rx="2" ry="2" />
+<text  x="446.20" y="447.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::(anonymous namespace)::UpdateTLS(mojo::core::ports::PortLocker*, mojo::core::ports::PortLocker*) (2 samples, 0.45%)</title><rect x="318.3" y="533" width="5.3" height="15.0" fill="rgb(232,70,38)" rx="2" ry="2" />
+<text  x="321.29" y="543.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="1086.4" y="565" width="2.6" height="15.0" fill="rgb(210,220,37)" rx="2" ry="2" />
+<text  x="1089.35" y="575.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::OnEventMessage(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (52 samples, 11.71%)</title><rect x="206.7" y="597" width="138.2" height="15.0" fill="rgb(216,177,5)" rx="2" ry="2" />
+<text  x="209.67" y="607.5" >mojo::core::NodeC..</text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 0.23%)</title><rect x="950.8" y="453" width="2.7" height="15.0" fill="rgb(243,37,30)" rx="2" ry="2" />
+<text  x="953.81" y="463.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 0.23%)</title><rect x="1094.3" y="565" width="2.7" height="15.0" fill="rgb(241,91,28)" rx="2" ry="2" />
+<text  x="1097.32" y="575.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="1065.1" y="501" width="2.6" height="15.0" fill="rgb(242,37,2)" rx="2" ry="2" />
+<text  x="1068.09" y="511.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;, void&gt;::Invoke&lt;base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;, scoped_refptr&lt;media::VideoFrame&gt; &gt;(base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;) (6 samples, 1.35%)</title><rect x="942.8" y="629" width="16.0" height="15.0" fill="rgb(242,101,27)" rx="2" ry="2" />
+<text  x="945.84" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="379.4" y="533" width="2.7" height="15.0" fill="rgb(233,223,34)" rx="2" ry="2" />
+<text  x="382.41" y="543.5" ></text>
+</g>
+<g >
+<title>MojoWriteMessage (7 samples, 1.58%)</title><rect x="895.0" y="485" width="18.6" height="15.0" fill="rgb(214,171,5)" rx="2" ry="2" />
+<text  x="898.00" y="495.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="196.0" y="533" width="2.7" height="15.0" fill="rgb(224,134,33)" rx="2" ry="2" />
+<text  x="199.04" y="543.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_from_free_list (1 samples, 0.23%)</title><rect x="227.9" y="421" width="2.7" height="15.0" fill="rgb(239,134,25)" rx="2" ry="2" />
+<text  x="230.93" y="431.5" ></text>
+</g>
+<g >
+<title>base::Lock::~Lock() (1 samples, 0.23%)</title><rect x="972.1" y="405" width="2.6" height="15.0" fill="rgb(248,85,3)" rx="2" ry="2" />
+<text  x="975.07" y="415.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (4 samples, 0.90%)</title><rect x="515.0" y="261" width="10.6" height="15.0" fill="rgb(205,195,45)" rx="2" ry="2" />
+<text  x="517.95" y="271.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (4 samples, 0.90%)</title><rect x="900.3" y="261" width="10.6" height="15.0" fill="rgb(241,111,19)" rx="2" ry="2" />
+<text  x="903.32" y="271.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="1062.4" y="501" width="2.7" height="15.0" fill="rgb(214,196,41)" rx="2" ry="2" />
+<text  x="1065.43" y="511.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::PrepareToForwardUserMessage(mojo::core::ports::PortRef const&amp;, mojo::core::ports::Port::State, bool, mojo::core::ports::UserMessageEvent*, mojo::core::ports::NodeName*) (1 samples, 0.23%)</title><rect x="873.7" y="389" width="2.7" height="15.0" fill="rgb(242,78,20)" rx="2" ry="2" />
+<text  x="876.74" y="399.5" ></text>
+</g>
+<g >
+<title>base::RunLoop::Delegate::ShouldQuitWhenIdle() (1 samples, 0.23%)</title><rect x="1182.0" y="629" width="2.7" height="15.0" fill="rgb(216,220,22)" rx="2" ry="2" />
+<text  x="1185.03" y="639.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.23%)</title><rect x="1168.7" y="597" width="2.7" height="15.0" fill="rgb(231,39,40)" rx="2" ry="2" />
+<text  x="1171.74" y="607.5" ></text>
+</g>
+<g >
+<title>mojo::core::Core::WriteMessage(unsigned int, unsigned long, MojoWriteMessageOptions const*) (1 samples, 0.23%)</title><rect x="855.1" y="469" width="2.7" height="15.0" fill="rgb(225,32,48)" rx="2" ry="2" />
+<text  x="858.14" y="479.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.23%)</title><rect x="227.9" y="469" width="2.7" height="15.0" fill="rgb(235,202,12)" rx="2" ry="2" />
+<text  x="230.93" y="479.5" ></text>
+</g>
+<g >
+<title>mojo::core::Core::WriteMessage(unsigned int, unsigned long, MojoWriteMessageOptions const*) (6 samples, 1.35%)</title><rect x="860.5" y="469" width="15.9" height="15.0" fill="rgb(239,73,5)" rx="2" ry="2" />
+<text  x="863.45" y="479.5" ></text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 0.23%)</title><rect x="924.2" y="533" width="2.7" height="15.0" fill="rgb(233,162,4)" rx="2" ry="2" />
+<text  x="927.23" y="543.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (2 samples, 0.45%)</title><rect x="934.9" y="453" width="5.3" height="15.0" fill="rgb(227,99,34)" rx="2" ry="2" />
+<text  x="937.86" y="463.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.23%)</title><rect x="560.1" y="213" width="2.7" height="15.0" fill="rgb(209,28,39)" rx="2" ry="2" />
+<text  x="563.14" y="223.5" ></text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 0.23%)</title><rect x="918.9" y="581" width="2.7" height="15.0" fill="rgb(230,113,41)" rx="2" ry="2" />
+<text  x="921.92" y="591.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TakeImmediateIncomingQueueTasks(base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;*) (3 samples, 0.68%)</title><rect x="1059.8" y="549" width="7.9" height="15.0" fill="rgb(248,48,52)" rx="2" ry="2" />
+<text  x="1062.77" y="559.5" ></text>
+</g>
+<g >
+<title>DYLD-STUB$$base::Lock::AssertAcquired() const (1 samples, 0.23%)</title><rect x="360.8" y="581" width="2.7" height="15.0" fill="rgb(245,138,22)" rx="2" ry="2" />
+<text  x="363.81" y="591.5" ></text>
+</g>
+<g >
+<title>DYLD-STUB$$base::Value::GetAsDictionary(base::DictionaryValue const**) const (1 samples, 0.23%)</title><rect x="544.2" y="309" width="2.6" height="15.0" fill="rgb(238,171,44)" rx="2" ry="2" />
+<text  x="547.19" y="319.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 0.23%)</title><rect x="560.1" y="197" width="2.7" height="15.0" fill="rgb(235,201,18)" rx="2" ry="2" />
+<text  x="563.14" y="207.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::GetUserData(mojo::core::ports::PortRef const&amp;, scoped_refptr&lt;mojo::core::ports::UserData&gt;*) (4 samples, 0.90%)</title><rect x="299.7" y="533" width="10.6" height="15.0" fill="rgb(245,88,0)" rx="2" ry="2" />
+<text  x="302.68" y="543.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.23%)</title><rect x="273.1" y="421" width="2.7" height="15.0" fill="rgb(222,118,11)" rx="2" ry="2" />
+<text  x="276.11" y="431.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 0.23%)</title><rect x="491.0" y="453" width="2.7" height="15.0" fill="rgb(227,161,40)" rx="2" ry="2" />
+<text  x="494.04" y="463.5" ></text>
+</g>
+<g >
+<title>-[NSAutoreleasePool drain] (3 samples, 0.68%)</title><rect x="15.3" y="677" width="8.0" height="15.0" fill="rgb(205,11,19)" rx="2" ry="2" />
+<text  x="18.32" y="687.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.23%)</title><rect x="1115.6" y="453" width="2.6" height="15.0" fill="rgb(206,138,25)" rx="2" ry="2" />
+<text  x="1118.59" y="463.5" ></text>
+</g>
+<g >
+<title>blink::VideoTrackAdapter::DeliverFrameOnIO(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks) (10 samples, 2.25%)</title><rect x="562.8" y="293" width="26.6" height="15.0" fill="rgb(206,141,7)" rx="2" ry="2" />
+<text  x="565.79" y="303.5" >b..</text>
+</g>
+<g >
+<title>mojo::SimpleWatcher::Arm(unsigned int*, mojo::HandleSignalsState*) (1 samples, 0.23%)</title><rect x="608.0" y="437" width="2.6" height="15.0" fill="rgb(238,180,8)" rx="2" ry="2" />
+<text  x="610.97" y="447.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessageInternal(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*) (1 samples, 0.23%)</title><rect x="855.1" y="405" width="2.7" height="15.0" fill="rgb(212,99,10)" rx="2" ry="2" />
+<text  x="858.14" y="415.5" ></text>
+</g>
+<g >
+<title>base::(anonymous namespace)::ThreadFunc(void*) (444 samples, 100.00%)</title><rect x="10.0" y="773" width="1180.0" height="15.0" fill="rgb(212,177,7)" rx="2" ry="2" />
+<text  x="13.00" y="783.5" >base::(anonymous namespace)::ThreadFunc(void*)</text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::Release() const (1 samples, 0.23%)</title><rect x="860.5" y="357" width="2.6" height="15.0" fill="rgb(220,1,22)" rx="2" ry="2" />
+<text  x="863.45" y="367.5" ></text>
+</g>
+<g >
+<title>content::WebMediaPlayerMS::FrameDeliverer::EnqueueFrame(scoped_refptr&lt;media::VideoFrame&gt;) (4 samples, 0.90%)</title><rect x="948.2" y="597" width="10.6" height="15.0" fill="rgb(238,228,24)" rx="2" ry="2" />
+<text  x="951.15" y="607.5" ></text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::Release() const (1 samples, 0.23%)</title><rect x="432.6" y="485" width="2.6" height="15.0" fill="rgb(216,44,28)" rx="2" ry="2" />
+<text  x="435.57" y="495.5" ></text>
+</g>
+<g >
+<title>base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt; media::BindToCurrentLoop&lt;scoped_refptr&lt;media::VideoFrame&gt; &gt;(base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;) (1 samples, 0.23%)</title><rect x="966.8" y="437" width="2.6" height="15.0" fill="rgb(225,48,45)" rx="2" ry="2" />
+<text  x="969.76" y="447.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GuardedTaskPoster::PostTask(base::sequence_manager::internal::PostedTask) (4 samples, 0.90%)</title><rect x="578.7" y="149" width="10.7" height="15.0" fill="rgb(250,25,39)" rx="2" ry="2" />
+<text  x="581.74" y="159.5" ></text>
+</g>
+<g >
+<title>base::internal::PriorityQueue::Push(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (4 samples, 0.90%)</title><rect x="392.7" y="453" width="10.6" height="15.0" fill="rgb(237,195,33)" rx="2" ry="2" />
+<text  x="395.70" y="463.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::SendMessageLocked(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (3 samples, 0.68%)</title><rect x="863.1" y="309" width="8.0" height="15.0" fill="rgb(233,112,51)" rx="2" ry="2" />
+<text  x="866.11" y="319.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.23%)</title><rect x="985.4" y="581" width="2.6" height="15.0" fill="rgb(211,179,11)" rx="2" ry="2" />
+<text  x="988.36" y="591.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (1 samples, 0.23%)</title><rect x="584.1" y="69" width="2.6" height="15.0" fill="rgb(214,131,27)" rx="2" ry="2" />
+<text  x="587.05" y="79.5" ></text>
+</g>
+<g >
+<title>gpu::GpuChannelHost::Listener::SendMessage(std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;, IPC::PendingSyncMsg*) (9 samples, 2.03%)</title><rect x="857.8" y="613" width="23.9" height="15.0" fill="rgb(212,226,45)" rx="2" ry="2" />
+<text  x="860.79" y="623.5" >g..</text>
+</g>
+<g >
+<title>IPC::mojom::ChannelProxy::Receive(IPC::MessageView) (12 samples, 2.70%)</title><rect x="887.0" y="565" width="31.9" height="15.0" fill="rgb(214,6,29)" rx="2" ry="2" />
+<text  x="890.03" y="575.5" >IP..</text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::SendMessageLocked(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (5 samples, 1.13%)</title><rect x="897.7" y="309" width="13.2" height="15.0" fill="rgb(246,66,22)" rx="2" ry="2" />
+<text  x="900.66" y="319.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 0.23%)</title><rect x="1011.9" y="597" width="2.7" height="15.0" fill="rgb(209,209,18)" rx="2" ry="2" />
+<text  x="1014.94" y="607.5" ></text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::GetHandleSignalsStateNoLock() const (1 samples, 0.23%)</title><rect x="932.2" y="453" width="2.7" height="15.0" fill="rgb(222,163,14)" rx="2" ry="2" />
+<text  x="935.21" y="463.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 0.23%)</title><rect x="273.1" y="469" width="2.7" height="15.0" fill="rgb(241,222,25)" rx="2" ry="2" />
+<text  x="276.11" y="479.5" ></text>
+</g>
+<g >
+<title>_CFAutoreleasePoolPop (1 samples, 0.23%)</title><rect x="20.6" y="661" width="2.7" height="15.0" fill="rgb(246,100,52)" rx="2" ry="2" />
+<text  x="23.63" y="671.5" ></text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::PortObserverThunk::OnPortStatusChanged() (23 samples, 5.18%)</title><rect x="238.6" y="533" width="61.1" height="15.0" fill="rgb(234,36,3)" rx="2" ry="2" />
+<text  x="241.56" y="543.5" >mojo::..</text>
+</g>
+<g >
+<title>DYLD-STUB$$mojo::internal::SerializationContext::SerializationContext() (1 samples, 0.23%)</title><rect x="884.4" y="565" width="2.6" height="15.0" fill="rgb(237,50,12)" rx="2" ry="2" />
+<text  x="887.37" y="575.5" ></text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (2 samples, 0.45%)</title><rect x="942.8" y="581" width="5.4" height="15.0" fill="rgb(211,98,12)" rx="2" ry="2" />
+<text  x="945.84" y="591.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueueSets::OnTaskPushedToEmptyQueue(base::sequence_manager::internal::WorkQueue*) (1 samples, 0.23%)</title><rect x="1067.7" y="549" width="2.7" height="15.0" fill="rgb(239,225,50)" rx="2" ry="2" />
+<text  x="1070.75" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::Watch::NotifyState(mojo::core::HandleSignalsState const&amp;, bool) (5 samples, 1.13%)</title><rect x="259.8" y="469" width="13.3" height="15.0" fill="rgb(241,220,52)" rx="2" ry="2" />
+<text  x="262.82" y="479.5" ></text>
+</g>
+<g >
+<title>non-virtual thunk to base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoIdleWork() (11 samples, 2.48%)</title><rect x="1158.1" y="677" width="29.2" height="15.0" fill="rgb(242,5,37)" rx="2" ry="2" />
+<text  x="1161.11" y="687.5" >no..</text>
+</g>
+<g >
+<title>base::Lock::CheckUnheldAndMark() (1 samples, 0.23%)</title><rect x="57.8" y="613" width="2.7" height="15.0" fill="rgb(249,227,21)" rx="2" ry="2" />
+<text  x="60.84" y="623.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::ForwardEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (5 samples, 1.13%)</title><rect x="897.7" y="389" width="13.2" height="15.0" fill="rgb(237,119,50)" rx="2" ry="2" />
+<text  x="900.66" y="399.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::NotifyDidProcessTask(base::sequence_manager::internal::SequenceManagerImpl::ExecutingTask*, base::sequence_manager::LazyNow*) (1 samples, 0.23%)</title><rect x="998.6" y="629" width="2.7" height="15.0" fill="rgb(250,213,42)" rx="2" ry="2" />
+<text  x="1001.65" y="639.5" ></text>
+</g>
+<g >
+<title>media::VideoFrameMetadata::MergeInternalValuesFrom(base::Value const&amp;) (2 samples, 0.45%)</title><rect x="557.5" y="309" width="5.3" height="15.0" fill="rgb(214,175,7)" rx="2" ry="2" />
+<text  x="560.48" y="319.5" ></text>
+</g>
+<g >
+<title>media::VideoFrameMetadata::GetDouble(media::VideoFrameMetadata::Key, double*) const (1 samples, 0.23%)</title><rect x="974.7" y="549" width="2.7" height="15.0" fill="rgb(209,81,2)" rx="2" ry="2" />
+<text  x="977.73" y="559.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="1176.7" y="613" width="2.7" height="15.0" fill="rgb(219,77,0)" rx="2" ry="2" />
+<text  x="1179.71" y="623.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="512.3" y="357" width="2.7" height="15.0" fill="rgb(217,53,1)" rx="2" ry="2" />
+<text  x="515.30" y="367.5" ></text>
+</g>
+<g >
+<title>__psynch_mutexdrop (1 samples, 0.23%)</title><rect x="578.7" y="53" width="2.7" height="15.0" fill="rgb(208,116,51)" rx="2" ry="2" />
+<text  x="581.74" y="63.5" ></text>
+</g>
+<g >
+<title>blink::MediaStreamVideoRendererSink::FrameDeliverer::OnVideoFrame(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks) (4 samples, 0.90%)</title><rect x="964.1" y="485" width="10.6" height="15.0" fill="rgb(225,184,27)" rx="2" ry="2" />
+<text  x="967.10" y="495.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (11 samples, 2.48%)</title><rect x="448.5" y="437" width="29.2" height="15.0" fill="rgb(237,123,35)" rx="2" ry="2" />
+<text  x="451.51" y="447.5" >ba..</text>
+</g>
+<g >
+<title>operator new(unsigned long) (3 samples, 0.68%)</title><rect x="222.6" y="533" width="8.0" height="15.0" fill="rgb(237,223,0)" rx="2" ry="2" />
+<text  x="225.61" y="543.5" ></text>
+</g>
+<g >
+<title>IPC::ChannelMojo::Send(IPC::Message*) (1 samples, 0.23%)</title><rect x="855.1" y="597" width="2.7" height="15.0" fill="rgb(229,69,35)" rx="2" ry="2" />
+<text  x="858.14" y="607.5" ></text>
+</g>
+<g >
+<title>mach_msg (7 samples, 1.58%)</title><rect x="414.0" y="437" width="18.6" height="15.0" fill="rgb(235,56,6)" rx="2" ry="2" />
+<text  x="416.96" y="447.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::PortLocker::PortLocker(mojo::core::ports::PortRef const**, unsigned long) (1 samples, 0.23%)</title><rect x="331.6" y="549" width="2.6" height="15.0" fill="rgb(246,117,35)" rx="2" ry="2" />
+<text  x="334.58" y="559.5" ></text>
+</g>
+<g >
+<title>IPC::mojom::ChannelProxy::Receive(IPC::MessageView) (1 samples, 0.23%)</title><rect x="855.1" y="565" width="2.7" height="15.0" fill="rgb(233,138,37)" rx="2" ry="2" />
+<text  x="858.14" y="575.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostTask(base::sequence_manager::internal::PostedTask) (4 samples, 0.90%)</title><rect x="578.7" y="133" width="10.7" height="15.0" fill="rgb(226,27,29)" rx="2" ry="2" />
+<text  x="581.74" y="143.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::GetMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*, mojo::core::ports::MessageFilter*) (4 samples, 0.90%)</title><rect x="278.4" y="501" width="10.7" height="15.0" fill="rgb(228,84,4)" rx="2" ry="2" />
+<text  x="281.42" y="511.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::~LockImpl() (1 samples, 0.23%)</title><rect x="972.1" y="389" width="2.6" height="15.0" fill="rgb(223,81,12)" rx="2" ry="2" />
+<text  x="975.07" y="399.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GuardedTaskPoster::PostTask(base::sequence_manager::internal::PostedTask) (20 samples, 4.50%)</title><rect x="435.2" y="485" width="53.2" height="15.0" fill="rgb(216,2,5)" rx="2" ry="2" />
+<text  x="438.23" y="495.5" >base:..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.23%)</title><rect x="879.1" y="373" width="2.6" height="15.0" fill="rgb(246,137,44)" rx="2" ry="2" />
+<text  x="882.05" y="383.5" ></text>
+</g>
+<g >
+<title>base::Value::MergeDictionary(base::Value const*) (2 samples, 0.45%)</title><rect x="557.5" y="293" width="5.3" height="15.0" fill="rgb(215,130,47)" rx="2" ry="2" />
+<text  x="560.48" y="303.5" ></text>
+</g>
+<g >
+<title>mojo::Connector::Accept(mojo::Message*) (5 samples, 1.13%)</title><rect x="926.9" y="517" width="13.3" height="15.0" fill="rgb(220,204,48)" rx="2" ry="2" />
+<text  x="929.89" y="527.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (3 samples, 0.68%)</title><rect x="1131.5" y="629" width="8.0" height="15.0" fill="rgb(236,178,34)" rx="2" ry="2" />
+<text  x="1134.53" y="639.5" ></text>
+</g>
+<g >
+<title>mojo::core::Core::DestroyMessage(unsigned long) (1 samples, 0.23%)</title><rect x="589.4" y="357" width="2.6" height="15.0" fill="rgb(209,196,36)" rx="2" ry="2" />
+<text  x="592.37" y="367.5" ></text>
+</g>
+<g >
+<title>MojoWriteMessage (6 samples, 1.35%)</title><rect x="860.5" y="485" width="15.9" height="15.0" fill="rgb(239,187,9)" rx="2" ry="2" />
+<text  x="863.45" y="495.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (2 samples, 0.45%)</title><rect x="557.5" y="277" width="5.3" height="15.0" fill="rgb(211,68,21)" rx="2" ry="2" />
+<text  x="560.48" y="287.5" ></text>
+</g>
+<g >
+<title>mojo::core::UserMessageImpl::CreateFromChannelMessage(mojo::core::ports::UserMessageEvent*, std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;, void*, unsigned long) (1 samples, 0.23%)</title><rect x="214.6" y="565" width="2.7" height="15.0" fill="rgb(239,32,51)" rx="2" ry="2" />
+<text  x="217.64" y="575.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (9 samples, 2.03%)</title><rect x="1006.6" y="629" width="23.9" height="15.0" fill="rgb(224,225,0)" rx="2" ry="2" />
+<text  x="1009.62" y="639.5" >b..</text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (blink::MediaStreamVideoRendererSink::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), WTF::CrossThreadUnretainedWrapper&lt;blink::MediaStreamVideoRendererSink::FrameDeliverer&gt; &gt;, void (scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks)&gt;::Run(base::internal::BindStateBase*, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;, base::TimeTicks&amp;&amp;) (3 samples, 0.68%)</title><rect x="570.8" y="213" width="7.9" height="15.0" fill="rgb(216,41,31)" rx="2" ry="2" />
+<text  x="573.77" y="223.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkDeduplicator::WillCheckForMoreWork() (2 samples, 0.45%)</title><rect x="1030.5" y="645" width="5.4" height="15.0" fill="rgb(225,13,40)" rx="2" ry="2" />
+<text  x="1033.54" y="655.5" ></text>
+</g>
+<g >
+<title>mach_msg (3 samples, 0.68%)</title><rect x="570.8" y="53" width="7.9" height="15.0" fill="rgb(227,124,20)" rx="2" ry="2" />
+<text  x="573.77" y="63.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 0.23%)</title><rect x="879.1" y="405" width="2.6" height="15.0" fill="rgb(252,20,21)" rx="2" ry="2" />
+<text  x="882.05" y="415.5" ></text>
+</g>
+<g >
+<title>base::mac::ScopedNSAutoreleasePool::ScopedNSAutoreleasePool() (2 samples, 0.45%)</title><rect x="836.5" y="677" width="5.3" height="15.0" fill="rgb(206,56,31)" rx="2" ry="2" />
+<text  x="839.53" y="687.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (20 samples, 4.50%)</title><rect x="435.2" y="501" width="53.2" height="15.0" fill="rgb(236,95,44)" rx="2" ry="2" />
+<text  x="438.23" y="511.5" >base:..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="491.0" y="485" width="2.7" height="15.0" fill="rgb(247,78,5)" rx="2" ry="2" />
+<text  x="494.04" y="495.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Release() (1 samples, 0.23%)</title><rect x="437.9" y="453" width="2.6" height="15.0" fill="rgb(213,168,38)" rx="2" ry="2" />
+<text  x="440.88" y="463.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.23%)</title><rect x="1118.2" y="517" width="2.7" height="15.0" fill="rgb(245,149,44)" rx="2" ry="2" />
+<text  x="1121.24" y="527.5" ></text>
+</g>
+<g >
+<title>base::TaskAnnotator::ScopedSetIpcHash::~ScopedSetIpcHash() (1 samples, 0.23%)</title><rect x="538.9" y="325" width="2.6" height="15.0" fill="rgb(218,144,50)" rx="2" ry="2" />
+<text  x="541.87" y="335.5" ></text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 0.23%)</title><rect x="998.6" y="581" width="2.7" height="15.0" fill="rgb(234,208,39)" rx="2" ry="2" />
+<text  x="1001.65" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="57.8" y="629" width="2.7" height="15.0" fill="rgb(250,152,12)" rx="2" ry="2" />
+<text  x="60.84" y="639.5" ></text>
+</g>
+<g >
+<title>base::internal::WeakReference::IsValid() const (1 samples, 0.23%)</title><rect x="507.0" y="453" width="2.6" height="15.0" fill="rgb(248,94,0)" rx="2" ry="2" />
+<text  x="509.98" y="463.5" ></text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (12 samples, 2.70%)</title><rect x="60.5" y="629" width="31.9" height="15.0" fill="rgb(253,44,15)" rx="2" ry="2" />
+<text  x="63.50" y="639.5" >ba..</text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.23%)</title><rect x="1091.7" y="565" width="2.6" height="15.0" fill="rgb(217,200,9)" rx="2" ry="2" />
+<text  x="1094.67" y="575.5" ></text>
+</g>
+<g >
+<title>IPC::(anonymous namespace)::ChannelAssociatedGroupController::Endpoint::SendMessage(mojo::Message*) (7 samples, 1.58%)</title><rect x="895.0" y="533" width="18.6" height="15.0" fill="rgb(253,228,27)" rx="2" ry="2" />
+<text  x="898.00" y="543.5" ></text>
+</g>
+<g >
+<title>mojo::FilterChain::Accept(mojo::Message*) (8 samples, 1.80%)</title><rect x="515.0" y="389" width="21.2" height="15.0" fill="rgb(206,40,39)" rx="2" ry="2" />
+<text  x="517.95" y="399.5" >m..</text>
+</g>
+<g >
+<title>base::internal::WeakReferenceOwner::GetRef() const (1 samples, 0.23%)</title><rect x="549.5" y="309" width="2.7" height="15.0" fill="rgb(206,222,39)" rx="2" ry="2" />
+<text  x="552.50" y="319.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::main_thread_only() (10 samples, 2.25%)</title><rect x="1004.0" y="645" width="26.5" height="15.0" fill="rgb(223,139,29)" rx="2" ry="2" />
+<text  x="1006.96" y="655.5" >b..</text>
+</g>
+<g >
+<title>malloc_zone_malloc (2 samples, 0.45%)</title><rect x="557.5" y="245" width="5.3" height="15.0" fill="rgb(254,97,4)" rx="2" ry="2" />
+<text  x="560.48" y="255.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::ShouldQuitRunLoopWhenIdle() (1 samples, 0.23%)</title><rect x="1184.7" y="629" width="2.6" height="15.0" fill="rgb(244,50,51)" rx="2" ry="2" />
+<text  x="1187.68" y="639.5" ></text>
+</g>
+<g >
+<title>base::internal::WeakPtrBase::~WeakPtrBase() (1 samples, 0.23%)</title><rect x="504.3" y="453" width="2.7" height="15.0" fill="rgb(206,186,19)" rx="2" ry="2" />
+<text  x="507.32" y="463.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessageInternal(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*) (6 samples, 1.35%)</title><rect x="860.5" y="405" width="15.9" height="15.0" fill="rgb(221,17,26)" rx="2" ry="2" />
+<text  x="863.45" y="415.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::OnUserMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (41 samples, 9.23%)</title><rect x="235.9" y="565" width="109.0" height="15.0" fill="rgb(210,93,41)" rx="2" ry="2" />
+<text  x="238.90" y="575.5" >mojo::core::p..</text>
+</g>
+<g >
+<title>base::ObserverList&lt;base::TaskObserver, false, true, base::internal::UncheckedObserverAdapter&gt;::Iter::~Iter() (1 samples, 0.23%)</title><rect x="1083.7" y="581" width="2.7" height="15.0" fill="rgb(234,131,37)" rx="2" ry="2" />
+<text  x="1086.69" y="591.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="1065.1" y="517" width="2.6" height="15.0" fill="rgb(254,206,18)" rx="2" ry="2" />
+<text  x="1068.09" y="527.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_from_free_list (1 samples, 0.23%)</title><rect x="560.1" y="165" width="2.7" height="15.0" fill="rgb(206,115,28)" rx="2" ry="2" />
+<text  x="563.14" y="175.5" ></text>
+</g>
+<g >
+<title>media::VideoFrameMetadata::GetBinaryValue(media::VideoFrameMetadata::Key) const (1 samples, 0.23%)</title><rect x="554.8" y="293" width="2.7" height="15.0" fill="rgb(231,221,19)" rx="2" ry="2" />
+<text  x="557.82" y="303.5" ></text>
+</g>
+<g >
+<title>posix_memalign (5 samples, 1.13%)</title><rect x="193.4" y="565" width="13.3" height="15.0" fill="rgb(249,42,15)" rx="2" ry="2" />
+<text  x="196.38" y="575.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 0.23%)</title><rect x="1062.4" y="485" width="2.7" height="15.0" fill="rgb(216,115,37)" rx="2" ry="2" />
+<text  x="1065.43" y="495.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;void (content::WebMediaPlayerMSCompositor::*)(scoped_refptr&lt;media::VideoFrame&gt;), void&gt;::Invoke&lt;void (content::WebMediaPlayerMSCompositor::*)(scoped_refptr&lt;media::VideoFrame&gt;), scoped_refptr&lt;content::WebMediaPlayerMSCompositor&gt; const&amp;, scoped_refptr&lt;media::VideoFrame&gt; &gt;(void (content::WebMediaPlayerMSCompositor::*)(scoped_refptr&lt;media::VideoFrame&gt;), scoped_refptr&lt;content::WebMediaPlayerMSCompositor&gt; const&amp;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;) (4 samples, 0.90%)</title><rect x="948.2" y="581" width="10.6" height="15.0" fill="rgb(249,73,11)" rx="2" ry="2" />
+<text  x="951.15" y="591.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 0.45%)</title><rect x="1150.1" y="645" width="5.4" height="15.0" fill="rgb(234,14,17)" rx="2" ry="2" />
+<text  x="1153.14" y="655.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 0.23%)</title><rect x="1115.6" y="485" width="2.6" height="15.0" fill="rgb(205,123,44)" rx="2" ry="2" />
+<text  x="1118.59" y="495.5" ></text>
+</g>
+<g >
+<title>base::internal::(anonymous namespace)::WorkerThreadDelegate::EnqueueTaskSource(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (4 samples, 0.90%)</title><rect x="392.7" y="469" width="10.6" height="15.0" fill="rgb(217,111,29)" rx="2" ry="2" />
+<text  x="395.70" y="479.5" ></text>
+</g>
+<g >
+<title>base::Thread::ThreadMain  0x644a03 (444 samples, 100.00%)</title><rect x="10.0" y="837" width="1180.0" height="15.0" fill="rgb(252,197,44)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" >base::Thread::ThreadMain  0x644a03</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::GetMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*, mojo::core::ports::MessageFilter*) (2 samples, 0.45%)</title><rect x="597.3" y="389" width="5.4" height="15.0" fill="rgb(224,1,27)" rx="2" ry="2" />
+<text  x="600.34" y="399.5" ></text>
+</g>
+<g >
+<title>pthread_self (1 samples, 0.23%)</title><rect x="1057.1" y="533" width="2.7" height="15.0" fill="rgb(250,153,15)" rx="2" ry="2" />
+<text  x="1060.12" y="543.5" ></text>
+</g>
+<g >
+<title>mojo::core::Watch::NotifyState(mojo::core::HandleSignalsState const&amp;, bool) (1 samples, 0.23%)</title><rect x="594.7" y="357" width="2.6" height="15.0" fill="rgb(221,81,0)" rx="2" ry="2" />
+<text  x="597.68" y="367.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.23%)</title><rect x="368.8" y="549" width="2.6" height="15.0" fill="rgb(238,152,54)" rx="2" ry="2" />
+<text  x="371.78" y="559.5" ></text>
+</g>
+<g >
+<title>pthread_self (1 samples, 0.23%)</title><rect x="89.7" y="613" width="2.7" height="15.0" fill="rgb(211,48,49)" rx="2" ry="2" />
+<text  x="92.73" y="623.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::GetStatus(mojo::core::ports::PortRef const&amp;, mojo::core::ports::PortStatus*) (1 samples, 0.23%)</title><rect x="895.0" y="421" width="2.7" height="15.0" fill="rgb(235,48,38)" rx="2" ry="2" />
+<text  x="898.00" y="431.5" ></text>
+</g>
+<g >
+<title>void base::internal::Invoker&lt;base::internal::BindState&lt;void (content::WebMediaPlayerMS::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;), base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt;, void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;::RunImpl&lt;void (content::WebMediaPlayerMS::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;), std::__Cr::tuple&lt;base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt;, 0ul&gt;(void (content::WebMediaPlayerMS::FrameDeliverer::*&amp;&amp;)(scoped_refptr&lt;media::VideoFrame&gt;), std::__Cr::tuple&lt;base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt;&amp;&amp;, std::__Cr::integer_sequence&lt;unsigned long, 0ul&gt;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;) (6 samples, 1.35%)</title><rect x="942.8" y="613" width="16.0" height="15.0" fill="rgb(232,213,54)" rx="2" ry="2" />
+<text  x="945.84" y="623.5" ></text>
+</g>
+<g >
+<title>base::internal::CallbackBase::IsCancelled() const (1 samples, 0.23%)</title><rect x="1115.6" y="581" width="2.6" height="15.0" fill="rgb(234,88,25)" rx="2" ry="2" />
+<text  x="1118.59" y="591.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (1 samples, 0.23%)</title><rect x="584.1" y="101" width="2.6" height="15.0" fill="rgb(247,102,43)" rx="2" ry="2" />
+<text  x="587.05" y="111.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="225.3" y="485" width="2.6" height="15.0" fill="rgb(218,226,14)" rx="2" ry="2" />
+<text  x="228.27" y="495.5" ></text>
+</g>
+<g >
+<title>base::Location::CreateFromHere(char const*, char const*, int) (1 samples, 0.23%)</title><rect x="382.1" y="517" width="2.6" height="15.0" fill="rgb(227,70,16)" rx="2" ry="2" />
+<text  x="385.07" y="527.5" ></text>
+</g>
+<g >
+<title>base::internal::BindState&lt;base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;, scoped_refptr&lt;media::VideoFrame&gt; &gt;::Destroy(base::internal::BindStateBase const*) (1 samples, 0.23%)</title><rect x="852.5" y="629" width="2.6" height="15.0" fill="rgb(247,209,34)" rx="2" ry="2" />
+<text  x="855.48" y="639.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueueSets::GetOldestQueueAndEnqueueOrderInSet(unsigned long, base::sequence_manager::internal::EnqueueOrder*) const (1 samples, 0.23%)</title><rect x="1110.3" y="581" width="2.6" height="15.0" fill="rgb(247,3,10)" rx="2" ry="2" />
+<text  x="1113.27" y="591.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 0.23%)</title><rect x="942.8" y="533" width="2.7" height="15.0" fill="rgb(227,45,3)" rx="2" ry="2" />
+<text  x="945.84" y="543.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::main_thread_only() (4 samples, 0.90%)</title><rect x="1171.4" y="645" width="10.6" height="15.0" fill="rgb(243,126,27)" rx="2" ry="2" />
+<text  x="1174.40" y="655.5" ></text>
+</g>
+<g >
+<title>media::VideoFrameMetadata::GetTimeTicks(media::VideoFrameMetadata::Key, base::TimeTicks*) const (1 samples, 0.23%)</title><rect x="953.5" y="549" width="2.6" height="15.0" fill="rgb(214,2,54)" rx="2" ry="2" />
+<text  x="956.47" y="559.5" ></text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 0.23%)</title><rect x="1014.6" y="613" width="2.7" height="15.0" fill="rgb(237,50,25)" rx="2" ry="2" />
+<text  x="1017.59" y="623.5" ></text>
+</g>
+<g >
+<title>mojo::Connector::DispatchMessage(mojo::Message) (31 samples, 6.98%)</title><rect x="509.6" y="453" width="82.4" height="15.0" fill="rgb(215,104,20)" rx="2" ry="2" />
+<text  x="512.64" y="463.5" >mojo::Con..</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="121.6" y="629" width="2.7" height="15.0" fill="rgb(216,184,30)" rx="2" ry="2" />
+<text  x="124.62" y="639.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.23%)</title><rect x="1166.1" y="613" width="2.6" height="15.0" fill="rgb(215,53,21)" rx="2" ry="2" />
+<text  x="1169.08" y="623.5" ></text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::WriteMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (6 samples, 1.35%)</title><rect x="860.5" y="453" width="15.9" height="15.0" fill="rgb(222,9,22)" rx="2" ry="2" />
+<text  x="863.45" y="463.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Unlock() (1 samples, 0.23%)</title><rect x="1102.3" y="565" width="2.7" height="15.0" fill="rgb(247,17,2)" rx="2" ry="2" />
+<text  x="1105.30" y="575.5" ></text>
+</g>
+<g >
+<title>blink::VideoTrackAdapter::VideoFrameResolutionAdapter::DoDeliverFrame(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks const&amp;) (7 samples, 1.58%)</title><rect x="570.8" y="261" width="18.6" height="15.0" fill="rgb(254,175,28)" rx="2" ry="2" />
+<text  x="573.77" y="271.5" ></text>
+</g>
+<g >
+<title>malloc_zone_memalign (4 samples, 0.90%)</title><rect x="196.0" y="549" width="10.7" height="15.0" fill="rgb(231,188,47)" rx="2" ry="2" />
+<text  x="199.04" y="559.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GuardedTaskPoster::PostTask(base::sequence_manager::internal::PostedTask) (1 samples, 0.23%)</title><rect x="969.4" y="405" width="2.7" height="15.0" fill="rgb(227,27,4)" rx="2" ry="2" />
+<text  x="972.41" y="415.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="1001.3" y="613" width="2.7" height="15.0" fill="rgb(223,198,33)" rx="2" ry="2" />
+<text  x="1004.31" y="623.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (3 samples, 0.68%)</title><rect x="863.1" y="261" width="8.0" height="15.0" fill="rgb(236,201,0)" rx="2" ry="2" />
+<text  x="866.11" y="271.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="876.4" y="453" width="2.7" height="15.0" fill="rgb(212,46,48)" rx="2" ry="2" />
+<text  x="879.40" y="463.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.23%)</title><rect x="918.9" y="549" width="2.7" height="15.0" fill="rgb(205,68,7)" rx="2" ry="2" />
+<text  x="921.92" y="559.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Unlock() (1 samples, 0.23%)</title><rect x="1147.5" y="629" width="2.6" height="15.0" fill="rgb(222,183,16)" rx="2" ry="2" />
+<text  x="1150.48" y="639.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 0.23%)</title><rect x="1184.7" y="581" width="2.6" height="15.0" fill="rgb(240,186,44)" rx="2" ry="2" />
+<text  x="1187.68" y="591.5" ></text>
+</g>
+<g >
+<title>gpu::SyncToken::SyncToken() (1 samples, 0.23%)</title><rect x="552.2" y="245" width="2.6" height="15.0" fill="rgb(211,140,4)" rx="2" ry="2" />
+<text  x="555.16" y="255.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (3 samples, 0.68%)</title><rect x="626.6" y="565" width="7.9" height="15.0" fill="rgb(238,75,22)" rx="2" ry="2" />
+<text  x="629.58" y="575.5" ></text>
+</g>
+<g >
+<title>base::TaskAnnotator::RunTask(char const*, base::PendingTask*) (47 samples, 10.59%)</title><rect x="852.5" y="645" width="124.9" height="15.0" fill="rgb(231,4,10)" rx="2" ry="2" />
+<text  x="855.48" y="655.5" >base::TaskAnnot..</text>
+</g>
+<g >
+<title>base::WorkIdProvider::IncrementWorkId() (2 samples, 0.45%)</title><rect x="1166.1" y="645" width="5.3" height="15.0" fill="rgb(229,40,48)" rx="2" ry="2" />
+<text  x="1169.08" y="655.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (2 samples, 0.45%)</title><rect x="71.1" y="597" width="5.3" height="15.0" fill="rgb(213,97,41)" rx="2" ry="2" />
+<text  x="74.13" y="607.5" ></text>
+</g>
+<g >
+<title>mach_msg (18 samples, 4.05%)</title><rect x="124.3" y="629" width="47.8" height="15.0" fill="rgb(211,131,28)" rx="2" ry="2" />
+<text  x="127.28" y="639.5" >mach..</text>
+</g>
+<g >
+<title>blink::MediaStreamVideoRendererSink::FrameDeliverer::OnVideoFrame(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks) (3 samples, 0.68%)</title><rect x="570.8" y="197" width="7.9" height="15.0" fill="rgb(217,107,11)" rx="2" ry="2" />
+<text  x="573.77" y="207.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (5 samples, 1.13%)</title><rect x="68.5" y="613" width="13.3" height="15.0" fill="rgb(254,183,16)" rx="2" ry="2" />
+<text  x="71.47" y="623.5" ></text>
+</g>
+<g >
+<title>__psynch_mutexdrop (1 samples, 0.23%)</title><rect x="873.7" y="325" width="2.7" height="15.0" fill="rgb(233,104,52)" rx="2" ry="2" />
+<text  x="876.74" y="335.5" ></text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (4 samples, 0.90%)</title><rect x="578.7" y="181" width="10.7" height="15.0" fill="rgb(250,174,31)" rx="2" ry="2" />
+<text  x="581.74" y="191.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Set(void*) (1 samples, 0.23%)</title><rect x="307.7" y="485" width="2.6" height="15.0" fill="rgb(251,134,46)" rx="2" ry="2" />
+<text  x="310.66" y="495.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::ScheduleWork() (1 samples, 0.23%)</title><rect x="485.7" y="437" width="2.7" height="15.0" fill="rgb(250,143,38)" rx="2" ry="2" />
+<text  x="488.72" y="447.5" ></text>
+</g>
+<g >
+<title>base::internal::WeakReference::IsValid() const (1 samples, 0.23%)</title><rect x="1115.6" y="533" width="2.6" height="15.0" fill="rgb(237,44,15)" rx="2" ry="2" />
+<text  x="1118.59" y="543.5" ></text>
+</g>
+<g >
+<title>MojoWriteMessage (1 samples, 0.23%)</title><rect x="855.1" y="485" width="2.7" height="15.0" fill="rgb(226,95,45)" rx="2" ry="2" />
+<text  x="858.14" y="495.5" ></text>
+</g>
+<g >
+<title>objc_msgSend (1 samples, 0.23%)</title><rect x="1187.3" y="677" width="2.7" height="15.0" fill="rgb(250,96,38)" rx="2" ry="2" />
+<text  x="1190.34" y="687.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 0.45%)</title><rect x="1166.1" y="629" width="5.3" height="15.0" fill="rgb(242,114,2)" rx="2" ry="2" />
+<text  x="1169.08" y="639.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 0.23%)</title><rect x="855.1" y="421" width="2.7" height="15.0" fill="rgb(236,93,5)" rx="2" ry="2" />
+<text  x="858.14" y="431.5" ></text>
+</g>
+<g >
+<title>void std::__Cr::__sort&lt;mojo::core::ports::PortLocker::PortLocker(mojo::core::ports::PortRef const**, unsigned long)::$_0&amp;, mojo::core::ports::PortRef const**&gt;(mojo::core::ports::PortRef const**, mojo::core::ports::PortRef const**, mojo::core::ports::PortLocker::PortLocker(mojo::core::ports::PortRef const**, unsigned long)::$_0&amp;) (1 samples, 0.23%)</title><rect x="331.6" y="533" width="2.6" height="15.0" fill="rgb(245,107,48)" rx="2" ry="2" />
+<text  x="334.58" y="543.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;void (blink::VideoTrackAdapter::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), void&gt;::Invoke&lt;void (blink::VideoTrackAdapter::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;blink::VideoTrackAdapter&gt; const&amp;, scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks&gt;(void (blink::VideoTrackAdapter::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;blink::VideoTrackAdapter&gt; const&amp;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;, base::TimeTicks&amp;&amp;) (7 samples, 1.58%)</title><rect x="958.8" y="597" width="18.6" height="15.0" fill="rgb(242,193,34)" rx="2" ry="2" />
+<text  x="961.78" y="607.5" ></text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::HandleValidatedMessage(mojo::Message*) (19 samples, 4.28%)</title><rect x="538.9" y="357" width="50.5" height="15.0" fill="rgb(217,5,7)" rx="2" ry="2" />
+<text  x="541.87" y="367.5" >mojo:..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::NotifyWillProcessTask(base::sequence_manager::internal::SequenceManagerImpl::ExecutingTask*, base::sequence_manager::LazyNow*) (2 samples, 0.45%)</title><rect x="1083.7" y="597" width="5.3" height="15.0" fill="rgb(241,158,12)" rx="2" ry="2" />
+<text  x="1086.69" y="607.5" ></text>
+</g>
+<g >
+<title>blink::VideoTrackAdapter::VideoFrameResolutionAdapter::DoDeliverFrame(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks const&amp;) (5 samples, 1.13%)</title><rect x="961.4" y="549" width="13.3" height="15.0" fill="rgb(206,79,30)" rx="2" ry="2" />
+<text  x="964.44" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::Write(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (4 samples, 0.90%)</title><rect x="863.1" y="325" width="10.6" height="15.0" fill="rgb(234,5,10)" rx="2" ry="2" />
+<text  x="866.11" y="335.5" ></text>
+</g>
+<g >
+<title>free (2 samples, 0.45%)</title><rect x="336.9" y="533" width="5.3" height="15.0" fill="rgb(218,22,13)" rx="2" ry="2" />
+<text  x="339.89" y="543.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::OnChannelMessage(void const*, unsigned long, std::__Cr::vector&lt;mojo::PlatformHandle, std::__Cr::allocator&lt;mojo::PlatformHandle&gt; &gt;) (172 samples, 38.74%)</title><rect x="177.4" y="613" width="457.1" height="15.0" fill="rgb(235,62,3)" rx="2" ry="2" />
+<text  x="180.43" y="623.5" >mojo::core::NodeChannel::OnChannelMessage(void const*, unsigne..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (3 samples, 0.68%)</title><rect x="1046.5" y="581" width="8.0" height="15.0" fill="rgb(229,16,19)" rx="2" ry="2" />
+<text  x="1049.49" y="591.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="501.7" y="437" width="2.6" height="15.0" fill="rgb(229,174,35)" rx="2" ry="2" />
+<text  x="504.67" y="447.5" ></text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::HandleValidatedMessage(mojo::Message*) (8 samples, 1.80%)</title><rect x="515.0" y="373" width="21.2" height="15.0" fill="rgb(227,43,14)" rx="2" ry="2" />
+<text  x="517.95" y="383.5" >m..</text>
+</g>
+<g >
+<title>base::sequence_manager::TimeDomain::MoveReadyDelayedTasksToWorkQueues(base::sequence_manager::LazyNow*) (1 samples, 0.23%)</title><rect x="1075.7" y="581" width="2.7" height="15.0" fill="rgb(211,38,32)" rx="2" ry="2" />
+<text  x="1078.72" y="591.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;void (content::VideoCaptureImpl::*)(int, scoped_refptr&lt;content::VideoCaptureImpl::BufferContext&gt;, double), void&gt;::Invoke&lt;void (content::VideoCaptureImpl::*)(int, scoped_refptr&lt;content::VideoCaptureImpl::BufferContext&gt;, double), base::WeakPtr&lt;content::VideoCaptureImpl&gt;, int, scoped_refptr&lt;content::VideoCaptureImpl::BufferContext&gt;, double&gt;(void (content::VideoCaptureImpl::*)(int, scoped_refptr&lt;content::VideoCaptureImpl::BufferContext&gt;, double), base::WeakPtr&lt;content::VideoCaptureImpl&gt;&amp;&amp;, int&amp;&amp;, scoped_refptr&lt;content::VideoCaptureImpl::BufferContext&gt;&amp;&amp;, double&amp;&amp;) (8 samples, 1.80%)</title><rect x="921.6" y="597" width="21.2" height="15.0" fill="rgb(229,7,19)" rx="2" ry="2" />
+<text  x="924.58" y="607.5" >v..</text>
+</g>
+<g >
+<title>mojo::core::PeekSizeMessageFilter::Match(mojo::core::ports::UserMessageEvent const&amp;) (2 samples, 0.45%)</title><rect x="283.7" y="469" width="5.4" height="15.0" fill="rgb(247,225,31)" rx="2" ry="2" />
+<text  x="286.74" y="479.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Unlock() (1 samples, 0.23%)</title><rect x="76.4" y="597" width="2.7" height="15.0" fill="rgb(230,181,24)" rx="2" ry="2" />
+<text  x="79.44" y="607.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostImmediateTaskImpl(base::sequence_manager::internal::PostedTask, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (1 samples, 0.23%)</title><rect x="969.4" y="373" width="2.7" height="15.0" fill="rgb(249,130,1)" rx="2" ry="2" />
+<text  x="972.41" y="383.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 0.23%)</title><rect x="201.4" y="501" width="2.6" height="15.0" fill="rgb(216,181,16)" rx="2" ry="2" />
+<text  x="204.35" y="511.5" ></text>
+</g>
+<g >
+<title>objc_alloc (1 samples, 0.23%)</title><rect x="839.2" y="661" width="2.6" height="15.0" fill="rgb(219,63,8)" rx="2" ry="2" />
+<text  x="842.19" y="671.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="871.1" y="309" width="2.6" height="15.0" fill="rgb(218,155,25)" rx="2" ry="2" />
+<text  x="874.08" y="319.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::(anonymous namespace)::UpdateTLS(mojo::core::ports::PortLocker*, mojo::core::ports::PortLocker*) (1 samples, 0.23%)</title><rect x="310.3" y="549" width="2.7" height="15.0" fill="rgb(219,69,34)" rx="2" ry="2" />
+<text  x="313.32" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="565.5" y="277" width="2.6" height="15.0" fill="rgb(254,194,3)" rx="2" ry="2" />
+<text  x="568.45" y="287.5" ></text>
+</g>
+<g >
+<title>decltype(auto) base::internal::BindImpl&lt;base::OnceCallback, void (media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (double)&gt; &gt;::*&amp;)(double), std::__Cr::unique_ptr&lt;media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (double)&gt; &gt;, std::__Cr::default_delete&lt;media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (double)&gt; &gt; &gt; &gt; &gt;(void (media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (double)&gt; &gt;::*&amp;&amp;&amp;)(double), std::__Cr::unique_ptr&lt;media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (double)&gt; &gt;, std::__Cr::default_delete&lt;media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (double)&gt; &gt; &gt; &gt;&amp;&amp;) (1 samples, 0.23%)</title><rect x="546.8" y="293" width="2.7" height="15.0" fill="rgb(212,184,47)" rx="2" ry="2" />
+<text  x="549.85" y="303.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendPeerEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (5 samples, 1.13%)</title><rect x="860.5" y="373" width="13.2" height="15.0" fill="rgb(207,207,37)" rx="2" ry="2" />
+<text  x="863.45" y="383.5" ></text>
+</g>
+<g >
+<title>mach_msg (3 samples, 0.68%)</title><rect x="863.1" y="277" width="8.0" height="15.0" fill="rgb(214,88,32)" rx="2" ry="2" />
+<text  x="866.11" y="287.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::SendMessageLocked(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (2 samples, 0.45%)</title><rect x="934.9" y="325" width="5.3" height="15.0" fill="rgb(225,177,9)" rx="2" ry="2" />
+<text  x="937.86" y="335.5" ></text>
+</g>
+<g >
+<title>blink::MediaStreamVideoTrack::FrameDeliverer::DeliverFrameOnIO(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks) (4 samples, 0.90%)</title><rect x="964.1" y="517" width="10.6" height="15.0" fill="rgb(215,174,0)" rx="2" ry="2" />
+<text  x="967.10" y="527.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 0.23%)</title><rect x="507.0" y="421" width="2.6" height="15.0" fill="rgb(205,56,0)" rx="2" ry="2" />
+<text  x="509.98" y="431.5" ></text>
+</g>
+<g >
+<title>base::internal::(anonymous namespace)::WorkerThreadDelegate::PostTaskNow(scoped_refptr&lt;base::internal::Sequence&gt;, base::internal::Task) (2 samples, 0.45%)</title><rect x="948.2" y="501" width="5.3" height="15.0" fill="rgb(213,121,44)" rx="2" ry="2" />
+<text  x="951.15" y="511.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (3 samples, 0.68%)</title><rect x="570.8" y="37" width="7.9" height="15.0" fill="rgb(228,157,28)" rx="2" ry="2" />
+<text  x="573.77" y="47.5" ></text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::AddRef() const (1 samples, 0.23%)</title><rect x="499.0" y="517" width="2.7" height="15.0" fill="rgb(212,137,38)" rx="2" ry="2" />
+<text  x="502.01" y="527.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::ForwardEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (1 samples, 0.23%)</title><rect x="855.1" y="389" width="2.7" height="15.0" fill="rgb(252,193,45)" rx="2" ry="2" />
+<text  x="858.14" y="399.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (18 samples, 4.05%)</title><rect x="124.3" y="613" width="47.8" height="15.0" fill="rgb(207,183,7)" rx="2" ry="2" />
+<text  x="127.28" y="623.5" >mach..</text>
+</g>
+<g >
+<title>base::GetProgramCounter() (1 samples, 0.23%)</title><rect x="366.1" y="549" width="2.7" height="15.0" fill="rgb(206,131,15)" rx="2" ry="2" />
+<text  x="369.13" y="559.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TakeImmediateIncomingQueueTasks(base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;*) (3 samples, 0.68%)</title><rect x="1118.2" y="581" width="8.0" height="15.0" fill="rgb(245,42,37)" rx="2" ry="2" />
+<text  x="1121.24" y="591.5" ></text>
+</g>
+<g >
+<title>base::debug::ScopedLockAcquireActivity::ScopedLockAcquireActivity(void const*, base::internal::LockImpl const*) (1 samples, 0.23%)</title><rect x="1126.2" y="613" width="2.7" height="15.0" fill="rgb(222,206,9)" rx="2" ry="2" />
+<text  x="1129.22" y="623.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 0.23%)</title><rect x="1086.4" y="533" width="2.6" height="15.0" fill="rgb(238,144,2)" rx="2" ry="2" />
+<text  x="1089.35" y="543.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() const (1 samples, 0.23%)</title><rect x="990.7" y="629" width="2.6" height="15.0" fill="rgb(216,47,27)" rx="2" ry="2" />
+<text  x="993.68" y="639.5" ></text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::ProcessIncomingMessage(mojo::internal::MultiplexRouter::MessageWrapper*, mojo::internal::MultiplexRouter::ClientCallBehavior, base::SequencedTaskRunner*) (20 samples, 4.50%)</title><rect x="538.9" y="405" width="53.1" height="15.0" fill="rgb(232,76,3)" rx="2" ry="2" />
+<text  x="541.87" y="415.5" >mojo:..</text>
+</g>
+<g >
+<title>mojo::Connector::Accept(mojo::Message*) (1 samples, 0.23%)</title><rect x="855.1" y="501" width="2.7" height="15.0" fill="rgb(210,214,13)" rx="2" ry="2" />
+<text  x="858.14" y="511.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendPeerEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (1 samples, 0.23%)</title><rect x="855.1" y="373" width="2.7" height="15.0" fill="rgb(224,158,3)" rx="2" ry="2" />
+<text  x="858.14" y="383.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (3 samples, 0.68%)</title><rect x="626.6" y="533" width="7.9" height="15.0" fill="rgb(224,0,35)" rx="2" ry="2" />
+<text  x="629.58" y="543.5" ></text>
+</g>
+<g >
+<title>std::__Cr::locale::~locale() (1 samples, 0.23%)</title><rect x="342.2" y="549" width="2.7" height="15.0" fill="rgb(225,215,48)" rx="2" ry="2" />
+<text  x="345.21" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::MachMessageSendLocked(mach_msg_header_t*) (5 samples, 1.13%)</title><rect x="897.7" y="293" width="13.2" height="15.0" fill="rgb(209,19,16)" rx="2" ry="2" />
+<text  x="900.66" y="303.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 0.45%)</title><rect x="993.3" y="613" width="5.3" height="15.0" fill="rgb(231,37,2)" rx="2" ry="2" />
+<text  x="996.33" y="623.5" ></text>
+</g>
+<g >
+<title>base::internal::BindStateBase::BindStateBase(void (*)(), void (*)(base::internal::BindStateBase const*), bool (*)(base::internal::BindStateBase const*, base::internal::BindStateBase::CancellationQueryMode)) (1 samples, 0.23%)</title><rect x="488.4" y="517" width="2.6" height="15.0" fill="rgb(220,98,3)" rx="2" ry="2" />
+<text  x="491.38" y="527.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::Write(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (2 samples, 0.45%)</title><rect x="934.9" y="341" width="5.3" height="15.0" fill="rgb(221,115,49)" rx="2" ry="2" />
+<text  x="937.86" y="351.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (3 samples, 0.68%)</title><rect x="291.7" y="501" width="8.0" height="15.0" fill="rgb(216,144,30)" rx="2" ry="2" />
+<text  x="294.71" y="511.5" ></text>
+</g>
+<g >
+<title>mojo::Connector::OnHandleReadyInternal(unsigned int) (41 samples, 9.23%)</title><rect x="501.7" y="485" width="108.9" height="15.0" fill="rgb(253,98,41)" rx="2" ry="2" />
+<text  x="504.67" y="495.5" >mojo::Connect..</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessageInternal(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*) (2 samples, 0.45%)</title><rect x="934.9" y="421" width="5.3" height="15.0" fill="rgb(247,82,0)" rx="2" ry="2" />
+<text  x="937.86" y="431.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="1099.6" y="565" width="2.7" height="15.0" fill="rgb(216,207,9)" rx="2" ry="2" />
+<text  x="1102.64" y="575.5" ></text>
+</g>
+<g >
+<title>IPC::mojom::ChannelProxy::Receive(IPC::MessageView) (8 samples, 1.80%)</title><rect x="860.5" y="565" width="21.2" height="15.0" fill="rgb(230,104,51)" rx="2" ry="2" />
+<text  x="863.45" y="575.5" >I..</text>
+</g>
+<g >
+<title>default_zone_malloc (1 samples, 0.23%)</title><rect x="225.3" y="469" width="2.6" height="15.0" fill="rgb(207,86,54)" rx="2" ry="2" />
+<text  x="228.27" y="479.5" ></text>
+</g>
+<g >
+<title>void base::internal::Invoker&lt;base::internal::BindState&lt;void (content::WebMediaPlayerMS::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;), base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt;, void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;::RunImpl&lt;void (content::WebMediaPlayerMS::FrameDeliverer::* const&amp;)(scoped_refptr&lt;media::VideoFrame&gt;), std::__Cr::tuple&lt;base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt; const&amp;, 0ul&gt;(void (content::WebMediaPlayerMS::FrameDeliverer::* const&amp;&amp;&amp;)(scoped_refptr&lt;media::VideoFrame&gt;), std::__Cr::tuple&lt;base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt; const&amp;&amp;&amp;, std::__Cr::integer_sequence&lt;unsigned long, 0ul&gt;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;) (3 samples, 0.68%)</title><rect x="966.8" y="469" width="7.9" height="15.0" fill="rgb(242,90,31)" rx="2" ry="2" />
+<text  x="969.76" y="479.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_8::__invoke(_malloc_zone_t*, unsigned long, unsigned long) (3 samples, 0.68%)</title><rect x="198.7" y="533" width="8.0" height="15.0" fill="rgb(229,63,18)" rx="2" ry="2" />
+<text  x="201.69" y="543.5" ></text>
+</g>
+<g >
+<title>set_tiny_meta_header_in_use (1 samples, 0.23%)</title><rect x="629.2" y="485" width="2.7" height="15.0" fill="rgb(215,102,9)" rx="2" ry="2" />
+<text  x="632.23" y="495.5" ></text>
+</g>
+<g >
+<title>non-virtual thunk to mojo::core::NodeController::OnEventMessage(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (1 samples, 0.23%)</title><rect x="613.3" y="597" width="2.6" height="15.0" fill="rgb(207,189,23)" rx="2" ry="2" />
+<text  x="616.29" y="607.5" ></text>
+</g>
+<g >
+<title>gpu::GpuChannelHost::Listener::SendMessage(std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;, IPC::PendingSyncMsg*) (14 samples, 3.15%)</title><rect x="881.7" y="613" width="37.2" height="15.0" fill="rgb(210,172,8)" rx="2" ry="2" />
+<text  x="884.71" y="623.5" >gpu..</text>
+</g>
+<g >
+<title>mojo::SimpleWatcher::Context::CallNotify(MojoTrapEvent const*) (90 samples, 20.27%)</title><rect x="371.4" y="549" width="239.2" height="15.0" fill="rgb(225,198,27)" rx="2" ry="2" />
+<text  x="374.44" y="559.5" >mojo::SimpleWatcher::Context::C..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::GetDelayTillNextDelayedTask(base::sequence_manager::LazyNow*) const (5 samples, 1.13%)</title><rect x="977.4" y="629" width="13.3" height="15.0" fill="rgb(226,37,17)" rx="2" ry="2" />
+<text  x="980.39" y="639.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (gpu::GpuChannelHost::Listener::*)(std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;, IPC::PendingSyncMsg*), base::internal::UnretainedWrapper&lt;gpu::GpuChannelHost::Listener&gt;, std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;, IPC::PendingSyncMsg*&gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (9 samples, 2.03%)</title><rect x="857.8" y="629" width="23.9" height="15.0" fill="rgb(224,79,46)" rx="2" ry="2" />
+<text  x="860.79" y="639.5" >b..</text>
+</g>
+<g >
+<title>blink::VideoTrackAdapter::VideoFrameResolutionAdapter::DeliverFrame(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks const&amp;, bool) (7 samples, 1.58%)</title><rect x="958.8" y="565" width="18.6" height="15.0" fill="rgb(218,192,7)" rx="2" ry="2" />
+<text  x="961.78" y="575.5" ></text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (3 samples, 0.68%)</title><rect x="570.8" y="149" width="7.9" height="15.0" fill="rgb(228,43,46)" rx="2" ry="2" />
+<text  x="573.77" y="159.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 0.23%)</title><rect x="879.1" y="437" width="2.6" height="15.0" fill="rgb(212,51,44)" rx="2" ry="2" />
+<text  x="882.05" y="447.5" ></text>
+</g>
+<g >
+<title>base::internal::IntrusiveHeap&lt;base::internal::PriorityQueue::TaskSourceAndSortKey&gt;::FillHole(unsigned long, base::internal::PriorityQueue::TaskSourceAndSortKey&amp;&amp;) (3 samples, 0.68%)</title><rect x="395.4" y="421" width="7.9" height="15.0" fill="rgb(226,10,1)" rx="2" ry="2" />
+<text  x="398.36" y="431.5" ></text>
+</g>
+<g >
+<title>mojo::core::RequestContext::current() (1 samples, 0.23%)</title><rect x="243.9" y="501" width="2.6" height="15.0" fill="rgb(245,98,13)" rx="2" ry="2" />
+<text  x="246.87" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="1086.4" y="549" width="2.6" height="15.0" fill="rgb(216,113,38)" rx="2" ry="2" />
+<text  x="1089.35" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendPeerEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (5 samples, 1.13%)</title><rect x="897.7" y="373" width="13.2" height="15.0" fill="rgb(219,110,17)" rx="2" ry="2" />
+<text  x="900.66" y="383.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="910.9" y="373" width="2.7" height="15.0" fill="rgb(210,198,46)" rx="2" ry="2" />
+<text  x="913.95" y="383.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 0.23%)</title><rect x="227.9" y="453" width="2.7" height="15.0" fill="rgb(252,223,22)" rx="2" ry="2" />
+<text  x="230.93" y="463.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_unlock (2 samples, 0.45%)</title><rect x="326.3" y="533" width="5.3" height="15.0" fill="rgb(213,151,4)" rx="2" ry="2" />
+<text  x="329.26" y="543.5" ></text>
+</g>
+<g >
+<title>std::__Cr::ios_base::~ios_base() (2 samples, 0.45%)</title><rect x="336.9" y="549" width="5.3" height="15.0" fill="rgb(239,35,38)" rx="2" ry="2" />
+<text  x="339.89" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::GetStatus(mojo::core::ports::PortRef const&amp;, mojo::core::ports::PortStatus*) (1 samples, 0.23%)</title><rect x="241.2" y="485" width="2.7" height="15.0" fill="rgb(247,193,10)" rx="2" ry="2" />
+<text  x="244.22" y="495.5" ></text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::DetachFromSequence() (1 samples, 0.23%)</title><rect x="972.1" y="421" width="2.6" height="15.0" fill="rgb(242,62,16)" rx="2" ry="2" />
+<text  x="975.07" y="431.5" ></text>
+</g>
+<g >
+<title>base::internal::Sequence::Transaction::PushTask(base::internal::Task) (1 samples, 0.23%)</title><rect x="408.6" y="469" width="2.7" height="15.0" fill="rgb(248,125,45)" rx="2" ry="2" />
+<text  x="411.65" y="479.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::PortLocker::PortLocker(mojo::core::ports::PortRef const**, unsigned long) (2 samples, 0.45%)</title><rect x="597.3" y="373" width="5.4" height="15.0" fill="rgb(240,12,2)" rx="2" ry="2" />
+<text  x="600.34" y="383.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (gpu::GpuChannelHost::Listener::*)(std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;, IPC::PendingSyncMsg*), base::internal::UnretainedWrapper&lt;gpu::GpuChannelHost::Listener&gt;, std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;, std::nullptr_t&gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (14 samples, 3.15%)</title><rect x="881.7" y="629" width="37.2" height="15.0" fill="rgb(226,46,48)" rx="2" ry="2" />
+<text  x="884.71" y="639.5" >bas..</text>
+</g>
+<g >
+<title>mach_msg (2 samples, 0.45%)</title><rect x="934.9" y="293" width="5.3" height="15.0" fill="rgb(242,36,13)" rx="2" ry="2" />
+<text  x="937.86" y="303.5" ></text>
+</g>
+<g >
+<title>media::VideoFrame::WrapExternalSharedMemory(media::VideoPixelFormat, gfx::Size const&amp;, gfx::Rect const&amp;, gfx::Size const&amp;, unsigned char*, unsigned long, base::SharedMemoryHandle, unsigned long, base::TimeDelta) (1 samples, 0.23%)</title><rect x="552.2" y="309" width="2.6" height="15.0" fill="rgb(225,227,3)" rx="2" ry="2" />
+<text  x="555.16" y="319.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::DidRunTask() (2 samples, 0.45%)</title><rect x="998.6" y="645" width="5.4" height="15.0" fill="rgb(243,54,12)" rx="2" ry="2" />
+<text  x="1001.65" y="655.5" ></text>
+</g>
+<g >
+<title>base::RunLoop::RunWithTimeout(base::TimeDelta) (444 samples, 100.00%)</title><rect x="10.0" y="725" width="1180.0" height="15.0" fill="rgb(250,59,13)" rx="2" ry="2" />
+<text  x="13.00" y="735.5" >base::RunLoop::RunWithTimeout(base::TimeDelta)</text>
+</g>
+<g >
+<title>media::VideoFrameMetadata::GetTimeTicks(media::VideoFrameMetadata::Key, base::TimeTicks*) const (1 samples, 0.23%)</title><rect x="554.8" y="309" width="2.7" height="15.0" fill="rgb(244,34,39)" rx="2" ry="2" />
+<text  x="557.82" y="319.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.23%)</title><rect x="988.0" y="565" width="2.7" height="15.0" fill="rgb(212,68,1)" rx="2" ry="2" />
+<text  x="991.02" y="575.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_wake (1 samples, 0.23%)</title><rect x="578.7" y="69" width="2.7" height="15.0" fill="rgb(228,169,24)" rx="2" ry="2" />
+<text  x="581.74" y="79.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="1078.4" y="549" width="2.6" height="15.0" fill="rgb(240,130,43)" rx="2" ry="2" />
+<text  x="1081.38" y="559.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 0.23%)</title><rect x="1152.8" y="629" width="2.7" height="15.0" fill="rgb(235,206,52)" rx="2" ry="2" />
+<text  x="1155.79" y="639.5" ></text>
+</g>
+<g >
+<title>content::WebMediaPlayerMSCompositor::RenderWithoutAlgorithm(scoped_refptr&lt;media::VideoFrame&gt;) (2 samples, 0.45%)</title><rect x="948.2" y="549" width="5.3" height="15.0" fill="rgb(235,180,44)" rx="2" ry="2" />
+<text  x="951.15" y="559.5" ></text>
+</g>
+<g >
+<title>DYLD-STUB$$malloc (1 samples, 0.23%)</title><rect x="188.1" y="597" width="2.6" height="15.0" fill="rgb(237,106,9)" rx="2" ry="2" />
+<text  x="191.06" y="607.5" ></text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 0.23%)</title><rect x="491.0" y="469" width="2.7" height="15.0" fill="rgb(239,134,24)" rx="2" ry="2" />
+<text  x="494.04" y="479.5" ></text>
+</g>
+<g >
+<title>base::debug::ScopedLockAcquireActivity::ScopedLockAcquireActivity(void const*, base::internal::LockImpl const*) (1 samples, 0.23%)</title><rect x="1176.7" y="597" width="2.7" height="15.0" fill="rgb(242,135,47)" rx="2" ry="2" />
+<text  x="1179.71" y="607.5" ></text>
+</g>
+<g >
+<title>base::internal::WeakReference::IsValid() const (1 samples, 0.23%)</title><rect x="491.0" y="517" width="2.7" height="15.0" fill="rgb(236,216,37)" rx="2" ry="2" />
+<text  x="494.04" y="527.5" ></text>
+</g>
+<g >
+<title>base::internal::SequenceLocalStorageMap::Set(int, base::internal::SequenceLocalStorageMap::ValueDestructorPair) (1 samples, 0.23%)</title><rect x="530.9" y="325" width="2.7" height="15.0" fill="rgb(221,135,0)" rx="2" ry="2" />
+<text  x="533.90" y="335.5" ></text>
+</g>
+<g >
+<title>mach_msg (11 samples, 2.48%)</title><rect x="448.5" y="421" width="29.2" height="15.0" fill="rgb(241,45,19)" rx="2" ry="2" />
+<text  x="451.51" y="431.5" >ma..</text>
+</g>
+<g >
+<title>MojoCreateMessageImpl (1 samples, 0.23%)</title><rect x="916.3" y="517" width="2.6" height="15.0" fill="rgb(212,141,12)" rx="2" ry="2" />
+<text  x="919.26" y="527.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 0.45%)</title><rect x="1078.4" y="565" width="5.3" height="15.0" fill="rgb(214,54,51)" rx="2" ry="2" />
+<text  x="1081.38" y="575.5" ></text>
+</g>
+<g >
+<title>media::VideoFrameMetadata::IsTrue(media::VideoFrameMetadata::Key) const (1 samples, 0.23%)</title><rect x="956.1" y="533" width="2.7" height="15.0" fill="rgb(225,104,24)" rx="2" ry="2" />
+<text  x="959.13" y="543.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Release() (1 samples, 0.23%)</title><rect x="477.7" y="437" width="2.7" height="15.0" fill="rgb(252,145,52)" rx="2" ry="2" />
+<text  x="480.75" y="447.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::operator==(base::TaskToken const&amp;) const (1 samples, 0.23%)</title><rect x="1097.0" y="565" width="2.6" height="15.0" fill="rgb(249,15,8)" rx="2" ry="2" />
+<text  x="1099.98" y="575.5" ></text>
+</g>
+<g >
+<title>std::__Cr::pair&lt;std::__Cr::__wrap_iter&lt;std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt; const*&gt;, std::__Cr::__wrap_iter&lt;std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt; const*&gt; &gt; base::internal::flat_tree&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt;, base::internal::GetKeyFromValuePairFirst&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt;, std::__Cr::less&lt;void&gt; &gt;::equal_range&lt;base::BasicStringPiece&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt; &gt;(base::BasicStringPiece&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt; const&amp;) const (1 samples, 0.23%)</title><rect x="974.7" y="501" width="2.7" height="15.0" fill="rgb(239,41,45)" rx="2" ry="2" />
+<text  x="977.73" y="511.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.23%)</title><rect x="1001.3" y="597" width="2.7" height="15.0" fill="rgb(211,14,53)" rx="2" ry="2" />
+<text  x="1004.31" y="607.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="876.4" y="469" width="2.7" height="15.0" fill="rgb(245,106,6)" rx="2" ry="2" />
+<text  x="879.40" y="479.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 0.23%)</title><rect x="273.1" y="453" width="2.7" height="15.0" fill="rgb(243,199,16)" rx="2" ry="2" />
+<text  x="276.11" y="463.5" ></text>
+</g>
+<g >
+<title>_pthread_start (444 samples, 100.00%)</title><rect x="10.0" y="805" width="1180.0" height="15.0" fill="rgb(219,75,41)" rx="2" ry="2" />
+<text  x="13.00" y="815.5" >_pthread_start</text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 0.23%)</title><rect x="501.7" y="469" width="2.6" height="15.0" fill="rgb(221,132,11)" rx="2" ry="2" />
+<text  x="504.67" y="479.5" ></text>
+</g>
+<g >
+<title>MojoAppendMessageData (1 samples, 0.23%)</title><rect x="879.1" y="533" width="2.6" height="15.0" fill="rgb(212,167,34)" rx="2" ry="2" />
+<text  x="882.05" y="543.5" ></text>
+</g>
+<g >
+<title>MojoAppendMessageDataImpl (1 samples, 0.23%)</title><rect x="879.1" y="517" width="2.6" height="15.0" fill="rgb(221,145,31)" rx="2" ry="2" />
+<text  x="882.05" y="527.5" ></text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::Accept(mojo::Message*) (8 samples, 1.80%)</title><rect x="895.0" y="549" width="21.3" height="15.0" fill="rgb(234,22,18)" rx="2" ry="2" />
+<text  x="898.00" y="559.5" >m..</text>
+</g>
+<g >
+<title>mojo::core::NodeController::ForwardEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (2 samples, 0.45%)</title><rect x="934.9" y="405" width="5.3" height="15.0" fill="rgb(242,8,12)" rx="2" ry="2" />
+<text  x="937.86" y="415.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::ForwardEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (5 samples, 1.13%)</title><rect x="860.5" y="389" width="13.2" height="15.0" fill="rgb(212,57,18)" rx="2" ry="2" />
+<text  x="863.45" y="399.5" ></text>
+</g>
+<g >
+<title>mojo::core::RequestContext::~RequestContext() (1 samples, 0.23%)</title><rect x="608.0" y="389" width="2.6" height="15.0" fill="rgb(221,8,13)" rx="2" ry="2" />
+<text  x="610.97" y="399.5" ></text>
+</g>
+<g >
+<title>IPC::(anonymous namespace)::ChannelAssociatedGroupController::SendMessage(mojo::Message*) (7 samples, 1.58%)</title><rect x="860.5" y="517" width="18.6" height="15.0" fill="rgb(220,145,51)" rx="2" ry="2" />
+<text  x="863.45" y="527.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="998.6" y="597" width="2.7" height="15.0" fill="rgb(232,227,10)" rx="2" ry="2" />
+<text  x="1001.65" y="607.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::main_thread_only() (1 samples, 0.23%)</title><rect x="1184.7" y="613" width="2.6" height="15.0" fill="rgb(240,215,40)" rx="2" ry="2" />
+<text  x="1187.68" y="623.5" ></text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (4 samples, 0.90%)</title><rect x="262.5" y="453" width="10.6" height="15.0" fill="rgb(207,158,22)" rx="2" ry="2" />
+<text  x="265.48" y="463.5" ></text>
+</g>
+<g >
+<title>IPC::(anonymous namespace)::ChannelAssociatedGroupController::Accept(mojo::Message*) (9 samples, 2.03%)</title><rect x="512.3" y="421" width="23.9" height="15.0" fill="rgb(246,20,9)" rx="2" ry="2" />
+<text  x="515.30" y="431.5" >I..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_0::__invoke(_malloc_zone_t*, void const*) (1 samples, 0.23%)</title><rect x="589.4" y="277" width="2.6" height="15.0" fill="rgb(233,151,34)" rx="2" ry="2" />
+<text  x="592.37" y="287.5" ></text>
+</g>
+<g >
+<title>MojoWriteMessage (5 samples, 1.13%)</title><rect x="926.9" y="501" width="13.3" height="15.0" fill="rgb(245,198,51)" rx="2" ry="2" />
+<text  x="929.89" y="511.5" ></text>
+</g>
+<g >
+<title>mojo::Connector::ReadMessage(mojo::Message*) (4 samples, 0.90%)</title><rect x="592.0" y="453" width="10.7" height="15.0" fill="rgb(209,34,48)" rx="2" ry="2" />
+<text  x="595.03" y="463.5" ></text>
+</g>
+<g >
+<title>malloc (2 samples, 0.45%)</title><rect x="557.5" y="261" width="5.3" height="15.0" fill="rgb(227,38,43)" rx="2" ry="2" />
+<text  x="560.48" y="271.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::CreateEventMessage(unsigned long, unsigned long, void**, unsigned long) (1 samples, 0.23%)</title><rect x="879.1" y="453" width="2.6" height="15.0" fill="rgb(206,120,16)" rx="2" ry="2" />
+<text  x="882.05" y="463.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckUnheldAndMark() (1 samples, 0.23%)</title><rect x="1128.9" y="629" width="2.6" height="15.0" fill="rgb(254,193,23)" rx="2" ry="2" />
+<text  x="1131.87" y="639.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::(anonymous namespace)::UpdateTLS(mojo::core::ports::PortLocker*, mojo::core::ports::PortLocker*) (1 samples, 0.23%)</title><rect x="600.0" y="357" width="2.7" height="15.0" fill="rgb(241,135,9)" rx="2" ry="2" />
+<text  x="603.00" y="367.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="275.8" y="469" width="2.6" height="15.0" fill="rgb(220,185,51)" rx="2" ry="2" />
+<text  x="278.77" y="479.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueue::TakeImmediateIncomingQueueTasks() (4 samples, 0.90%)</title><rect x="1059.8" y="565" width="10.6" height="15.0" fill="rgb(245,153,36)" rx="2" ry="2" />
+<text  x="1062.77" y="575.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.23%)</title><rect x="227.9" y="485" width="2.7" height="15.0" fill="rgb(214,84,36)" rx="2" ry="2" />
+<text  x="230.93" y="495.5" ></text>
+</g>
+<g >
+<title>mojo::core::WatcherDispatcher::NotifyHandleState(mojo::core::Dispatcher*, mojo::core::HandleSignalsState const&amp;) (10 samples, 2.25%)</title><rect x="251.8" y="485" width="26.6" height="15.0" fill="rgb(247,96,32)" rx="2" ry="2" />
+<text  x="254.85" y="495.5" >m..</text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 0.23%)</title><rect x="1046.5" y="565" width="2.6" height="15.0" fill="rgb(229,135,27)" rx="2" ry="2" />
+<text  x="1049.49" y="575.5" ></text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::GetHandleSignalsStateNoLock() const (1 samples, 0.23%)</title><rect x="895.0" y="437" width="2.7" height="15.0" fill="rgb(243,88,6)" rx="2" ry="2" />
+<text  x="898.00" y="447.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 0.23%)</title><rect x="1166.1" y="597" width="2.6" height="15.0" fill="rgb(210,42,26)" rx="2" ry="2" />
+<text  x="1169.08" y="607.5" ></text>
+</g>
+<g >
+<title>base::subtle::TimeTicksNowIgnoringOverride() (2 samples, 0.45%)</title><rect x="980.0" y="581" width="5.4" height="15.0" fill="rgb(227,97,12)" rx="2" ry="2" />
+<text  x="983.05" y="591.5" ></text>
+</g>
+<g >
+<title>base::debug::ScopedLockAcquireActivity::ScopedLockAcquireActivity(void const*, base::internal::LockImpl const*) (1 samples, 0.23%)</title><rect x="597.3" y="341" width="2.7" height="15.0" fill="rgb(208,172,53)" rx="2" ry="2" />
+<text  x="600.34" y="351.5" ></text>
+</g>
+<g >
+<title>base::allocator::(anonymous namespace)::MemalignImpl(base::allocator::AllocatorDispatch const*, unsigned long, unsigned long, void*) (1 samples, 0.23%)</title><rect x="198.7" y="501" width="2.7" height="15.0" fill="rgb(244,228,38)" rx="2" ry="2" />
+<text  x="201.69" y="511.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.23%)</title><rect x="1054.5" y="517" width="2.6" height="15.0" fill="rgb(219,205,38)" rx="2" ry="2" />
+<text  x="1057.46" y="527.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::WriteChannelMessage(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (2 samples, 0.45%)</title><rect x="934.9" y="357" width="5.3" height="15.0" fill="rgb(213,3,51)" rx="2" ry="2" />
+<text  x="937.86" y="367.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.23%)</title><rect x="437.9" y="437" width="2.6" height="15.0" fill="rgb(230,227,40)" rx="2" ry="2" />
+<text  x="440.88" y="447.5" ></text>
+</g>
+<g >
+<title>std::__Cr::vector&lt;mojo::core::RequestContext::WatchNotifyFinalizer, base::StackAllocator&lt;mojo::core::RequestContext::WatchNotifyFinalizer, 8ul&gt; &gt;::reserve(unsigned long) (1 samples, 0.23%)</title><rect x="352.8" y="581" width="2.7" height="15.0" fill="rgb(207,28,9)" rx="2" ry="2" />
+<text  x="355.84" y="591.5" ></text>
+</g>
+<g >
+<title>mojo::core::WatcherDispatcher::NotifyHandleState(mojo::core::Dispatcher*, mojo::core::HandleSignalsState const&amp;) (1 samples, 0.23%)</title><rect x="594.7" y="373" width="2.6" height="15.0" fill="rgb(212,16,32)" rx="2" ry="2" />
+<text  x="597.68" y="383.5" ></text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (2 samples, 0.45%)</title><rect x="948.2" y="533" width="5.3" height="15.0" fill="rgb(250,107,30)" rx="2" ry="2" />
+<text  x="951.15" y="543.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_from_free_list (1 samples, 0.23%)</title><rect x="631.9" y="485" width="2.6" height="15.0" fill="rgb(214,149,43)" rx="2" ry="2" />
+<text  x="634.89" y="495.5" ></text>
+</g>
+<g >
+<title>CFRunLoopWakeUp (2 samples, 0.45%)</title><rect x="578.7" y="101" width="5.4" height="15.0" fill="rgb(206,15,46)" rx="2" ry="2" />
+<text  x="581.74" y="111.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (1 samples, 0.23%)</title><rect x="406.0" y="453" width="2.6" height="15.0" fill="rgb(210,214,26)" rx="2" ry="2" />
+<text  x="408.99" y="463.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkDeduplicator::OnWorkStarted() (2 samples, 0.45%)</title><rect x="1150.1" y="661" width="5.4" height="15.0" fill="rgb(218,15,47)" rx="2" ry="2" />
+<text  x="1153.14" y="671.5" ></text>
+</g>
+<g >
+<title>base::Thread::Run(base::RunLoop*) (444 samples, 100.00%)</title><rect x="10.0" y="741" width="1180.0" height="15.0" fill="rgb(254,136,14)" rx="2" ry="2" />
+<text  x="13.00" y="751.5" >base::Thread::Run(base::RunLoop*)</text>
+</g>
+<g >
+<title>void base::internal::Invoker&lt;base::internal::BindState&lt;void (content::WebMediaPlayerMS::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;), base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt;, void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;::RunImpl&lt;void (content::WebMediaPlayerMS::FrameDeliverer::* const&amp;)(scoped_refptr&lt;media::VideoFrame&gt;), std::__Cr::tuple&lt;base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt; const&amp;, 0ul&gt;(void (content::WebMediaPlayerMS::FrameDeliverer::* const&amp;&amp;&amp;)(scoped_refptr&lt;media::VideoFrame&gt;), std::__Cr::tuple&lt;base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt; const&amp;&amp;&amp;, std::__Cr::integer_sequence&lt;unsigned long, 0ul&gt;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;) (3 samples, 0.68%)</title><rect x="570.8" y="181" width="7.9" height="15.0" fill="rgb(237,125,17)" rx="2" ry="2" />
+<text  x="573.77" y="191.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 0.23%)</title><rect x="190.7" y="597" width="2.7" height="15.0" fill="rgb(242,34,26)" rx="2" ry="2" />
+<text  x="193.72" y="607.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() (1 samples, 0.23%)</title><rect x="1001.3" y="629" width="2.7" height="15.0" fill="rgb(218,11,21)" rx="2" ry="2" />
+<text  x="1004.31" y="639.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.23%)</title><rect x="501.7" y="453" width="2.6" height="15.0" fill="rgb(244,143,14)" rx="2" ry="2" />
+<text  x="504.67" y="463.5" ></text>
+</g>
+<g >
+<title>mojo::Message::Message(unsigned int, unsigned int, unsigned long, unsigned long, std::__Cr::vector&lt;mojo::ScopedHandleBase&lt;mojo::Handle&gt;, std::__Cr::allocator&lt;mojo::ScopedHandleBase&lt;mojo::Handle&gt; &gt; &gt;*) (1 samples, 0.23%)</title><rect x="940.2" y="549" width="2.6" height="15.0" fill="rgb(232,108,30)" rx="2" ry="2" />
+<text  x="943.18" y="559.5" ></text>
+</g>
+<g >
+<title>base::debug::ScopedLockAcquireActivity::ScopedLockAcquireActivity(void const*, base::internal::LockImpl const*) (1 samples, 0.23%)</title><rect x="1099.6" y="549" width="2.7" height="15.0" fill="rgb(242,162,38)" rx="2" ry="2" />
+<text  x="1102.64" y="559.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 0.23%)</title><rect x="918.9" y="533" width="2.7" height="15.0" fill="rgb(244,28,15)" rx="2" ry="2" />
+<text  x="921.92" y="543.5" ></text>
+</g>
+<g >
+<title>gpu::GpuChannelHost::Listener::OnMessageReceived(IPC::Message const&amp;) (4 samples, 0.90%)</title><rect x="515.0" y="309" width="10.6" height="15.0" fill="rgb(209,171,9)" rx="2" ry="2" />
+<text  x="517.95" y="319.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::OnChannelMessage(void const*, unsigned long, std::__Cr::vector&lt;mojo::PlatformHandle, std::__Cr::allocator&lt;mojo::PlatformHandle&gt; &gt;) (1 samples, 0.23%)</title><rect x="121.6" y="613" width="2.7" height="15.0" fill="rgb(229,77,3)" rx="2" ry="2" />
+<text  x="124.62" y="623.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Release() (1 samples, 0.23%)</title><rect x="950.8" y="469" width="2.7" height="15.0" fill="rgb(243,54,6)" rx="2" ry="2" />
+<text  x="953.81" y="479.5" ></text>
+</g>
+<g >
+<title>base::MessagePumpKqueue::Run(base::MessagePump::Delegate*) (444 samples, 100.00%)</title><rect x="10.0" y="693" width="1180.0" height="15.0" fill="rgb(215,3,47)" rx="2" ry="2" />
+<text  x="13.00" y="703.5" >base::MessagePumpKqueue::Run(base::MessagePump::Delegate*)</text>
+</g>
+<g >
+<title>mojo::InterfaceEndpointClient::HandleIncomingMessage(mojo::Message*) (19 samples, 4.28%)</title><rect x="538.9" y="389" width="50.5" height="15.0" fill="rgb(238,161,29)" rx="2" ry="2" />
+<text  x="541.87" y="399.5" >mojo:..</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (6 samples, 1.35%)</title><rect x="897.7" y="421" width="15.9" height="15.0" fill="rgb(238,222,34)" rx="2" ry="2" />
+<text  x="900.66" y="431.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.23%)</title><rect x="243.9" y="485" width="2.6" height="15.0" fill="rgb(217,14,26)" rx="2" ry="2" />
+<text  x="246.87" y="495.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (1 samples, 0.23%)</title><rect x="1062.4" y="517" width="2.7" height="15.0" fill="rgb(224,86,1)" rx="2" ry="2" />
+<text  x="1065.43" y="527.5" ></text>
+</g>
+<g >
+<title>media::mojom::VideoCaptureHostProxy::ReleaseBuffer(int, int, double) (8 samples, 1.80%)</title><rect x="921.6" y="565" width="21.2" height="15.0" fill="rgb(247,204,27)" rx="2" ry="2" />
+<text  x="924.58" y="575.5" >m..</text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (1 samples, 0.23%)</title><rect x="969.4" y="437" width="2.7" height="15.0" fill="rgb(247,112,17)" rx="2" ry="2" />
+<text  x="972.41" y="447.5" ></text>
+</g>
+<g >
+<title>non-virtual thunk to base::sequence_manager::internal::SequenceManagerImpl::OnSystemIdle() (2 samples, 0.45%)</title><rect x="1182.0" y="645" width="5.3" height="15.0" fill="rgb(238,70,41)" rx="2" ry="2" />
+<text  x="1185.03" y="655.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_unlock_slow (1 samples, 0.23%)</title><rect x="477.7" y="405" width="2.7" height="15.0" fill="rgb(236,165,43)" rx="2" ry="2" />
+<text  x="480.75" y="415.5" ></text>
+</g>
+<g >
+<title>base::internal::Sequence::BeginTransaction() (1 samples, 0.23%)</title><rect x="406.0" y="469" width="2.6" height="15.0" fill="rgb(214,110,51)" rx="2" ry="2" />
+<text  x="408.99" y="479.5" ></text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::WriteMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (1 samples, 0.23%)</title><rect x="855.1" y="453" width="2.7" height="15.0" fill="rgb(246,39,51)" rx="2" ry="2" />
+<text  x="858.14" y="463.5" ></text>
+</g>
+<g >
+<title>base::internal::PooledSingleThreadTaskRunnerManager::PooledSingleThreadTaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (18 samples, 4.05%)</title><rect x="387.4" y="501" width="47.8" height="15.0" fill="rgb(212,21,44)" rx="2" ry="2" />
+<text  x="390.39" y="511.5" >base..</text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 0.23%)</title><rect x="1144.8" y="629" width="2.7" height="15.0" fill="rgb(230,111,26)" rx="2" ry="2" />
+<text  x="1147.82" y="639.5" ></text>
+</g>
+<g >
+<title>media::mojom::VideoCaptureObserverStubDispatch::Accept(media::mojom::VideoCaptureObserver*, mojo::Message*) (19 samples, 4.28%)</title><rect x="538.9" y="341" width="50.5" height="15.0" fill="rgb(233,99,37)" rx="2" ry="2" />
+<text  x="541.87" y="351.5" >media..</text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (6 samples, 1.35%)</title><rect x="860.5" y="421" width="15.9" height="15.0" fill="rgb(238,163,45)" rx="2" ry="2" />
+<text  x="863.45" y="431.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueue::RemoveAllCanceledTasksFromFront() (2 samples, 0.45%)</title><rect x="1112.9" y="597" width="5.3" height="15.0" fill="rgb(247,97,19)" rx="2" ry="2" />
+<text  x="1115.93" y="607.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.23%)</title><rect x="273.1" y="405" width="2.7" height="15.0" fill="rgb(228,109,9)" rx="2" ry="2" />
+<text  x="276.11" y="415.5" ></text>
+</g>
+<g >
+<title>base::debug::ScopedLockAcquireActivity::ScopedLockAcquireActivity(void const*, base::internal::LockImpl const*) (1 samples, 0.23%)</title><rect x="1123.6" y="501" width="2.6" height="15.0" fill="rgb(236,84,30)" rx="2" ry="2" />
+<text  x="1126.56" y="511.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;::Ring::push_back(base::sequence_manager::Task&amp;&amp;) (1 samples, 0.23%)</title><rect x="586.7" y="85" width="2.7" height="15.0" fill="rgb(210,121,12)" rx="2" ry="2" />
+<text  x="589.71" y="95.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::SendChannelMessage(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (5 samples, 1.13%)</title><rect x="897.7" y="357" width="13.2" height="15.0" fill="rgb(213,139,7)" rx="2" ry="2" />
+<text  x="900.66" y="367.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (3 samples, 0.68%)</title><rect x="1118.2" y="549" width="8.0" height="15.0" fill="rgb(241,102,6)" rx="2" ry="2" />
+<text  x="1121.24" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::Message::Message(unsigned int, unsigned int, unsigned long, unsigned long, std::__Cr::vector&lt;mojo::ScopedHandleBase&lt;mojo::Handle&gt;, std::__Cr::allocator&lt;mojo::ScopedHandleBase&lt;mojo::Handle&gt; &gt; &gt;*) (1 samples, 0.23%)</title><rect x="916.3" y="549" width="2.6" height="15.0" fill="rgb(224,0,6)" rx="2" ry="2" />
+<text  x="919.26" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::MessageHandle::Close() (1 samples, 0.23%)</title><rect x="589.4" y="389" width="2.6" height="15.0" fill="rgb(232,31,51)" rx="2" ry="2" />
+<text  x="592.37" y="399.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (7 samples, 1.58%)</title><rect x="414.0" y="421" width="18.6" height="15.0" fill="rgb(220,95,16)" rx="2" ry="2" />
+<text  x="416.96" y="431.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="241.2" y="453" width="2.7" height="15.0" fill="rgb(249,83,19)" rx="2" ry="2" />
+<text  x="244.22" y="463.5" ></text>
+</g>
+<g >
+<title>base::PendingTask::PendingTask(base::PendingTask&amp;&amp;) (1 samples, 0.23%)</title><rect x="586.7" y="69" width="2.7" height="15.0" fill="rgb(223,47,45)" rx="2" ry="2" />
+<text  x="589.71" y="79.5" ></text>
+</g>
+<g >
+<title>IPC::internal::MessagePipeReader::Receive(IPC::MessageView) (4 samples, 0.90%)</title><rect x="515.0" y="341" width="10.6" height="15.0" fill="rgb(242,55,27)" rx="2" ry="2" />
+<text  x="517.95" y="351.5" ></text>
+</g>
+<g >
+<title>mach_msg (5 samples, 1.13%)</title><rect x="897.7" y="277" width="13.2" height="15.0" fill="rgb(208,32,2)" rx="2" ry="2" />
+<text  x="900.66" y="287.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::WriteChannelMessage(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (4 samples, 0.90%)</title><rect x="863.1" y="341" width="10.6" height="15.0" fill="rgb(254,201,11)" rx="2" ry="2" />
+<text  x="866.11" y="351.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() (2 samples, 0.45%)</title><rect x="1078.4" y="581" width="5.3" height="15.0" fill="rgb(224,190,45)" rx="2" ry="2" />
+<text  x="1081.38" y="591.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 0.23%)</title><rect x="560.1" y="181" width="2.7" height="15.0" fill="rgb(247,164,17)" rx="2" ry="2" />
+<text  x="563.14" y="191.5" ></text>
+</g>
+<g >
+<title>(anonymous namespace)::MachAbsoluteTimeToTicks(unsigned long long) (1 samples, 0.23%)</title><rect x="1075.7" y="533" width="2.7" height="15.0" fill="rgb(244,93,53)" rx="2" ry="2" />
+<text  x="1078.72" y="543.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::operator==(base::TaskToken const&amp;) const (1 samples, 0.23%)</title><rect x="993.3" y="597" width="2.7" height="15.0" fill="rgb(217,188,40)" rx="2" ry="2" />
+<text  x="996.33" y="607.5" ></text>
+</g>
+<g >
+<title>content::WebMediaPlayerMSCompositor::EnqueueFrame(scoped_refptr&lt;media::VideoFrame&gt;) (4 samples, 0.90%)</title><rect x="948.2" y="565" width="10.6" height="15.0" fill="rgb(244,22,25)" rx="2" ry="2" />
+<text  x="951.15" y="575.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 0.23%)</title><rect x="1081.0" y="549" width="2.7" height="15.0" fill="rgb(253,76,48)" rx="2" ry="2" />
+<text  x="1084.04" y="559.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 0.23%)</title><rect x="1168.7" y="613" width="2.7" height="15.0" fill="rgb(207,170,44)" rx="2" ry="2" />
+<text  x="1171.74" y="623.5" ></text>
+</g>
+<g >
+<title>all (444 samples, 100%)</title><rect x="10.0" y="853" width="1180.0" height="15.0" fill="rgb(252,21,40)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" ></text>
+</g>
+<g >
+<title>base::DictionaryValue::GetWithoutPathExpansion(base::BasicStringPiece&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, base::Value const**) const (1 samples, 0.23%)</title><rect x="974.7" y="517" width="2.7" height="15.0" fill="rgb(245,213,25)" rx="2" ry="2" />
+<text  x="977.73" y="527.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoSomeWork() (117 samples, 26.35%)</title><rect x="844.5" y="677" width="311.0" height="15.0" fill="rgb(228,179,18)" rx="2" ry="2" />
+<text  x="847.50" y="687.5" >base::sequence_manager::internal::ThreadC..</text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::WriteMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (7 samples, 1.58%)</title><rect x="895.0" y="453" width="18.6" height="15.0" fill="rgb(219,40,16)" rx="2" ry="2" />
+<text  x="898.00" y="463.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendPeerEvent(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (2 samples, 0.45%)</title><rect x="934.9" y="389" width="5.3" height="15.0" fill="rgb(253,222,38)" rx="2" ry="2" />
+<text  x="937.86" y="399.5" ></text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (39 samples, 8.78%)</title><rect x="384.7" y="517" width="103.7" height="15.0" fill="rgb(224,145,31)" rx="2" ry="2" />
+<text  x="387.73" y="527.5" >base::TaskRu..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() (1 samples, 0.23%)</title><rect x="1086.4" y="581" width="2.6" height="15.0" fill="rgb(249,186,7)" rx="2" ry="2" />
+<text  x="1089.35" y="591.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::DeserializeEventMessage(mojo::core::ports::NodeName const&amp;, std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (7 samples, 1.58%)</title><rect x="212.0" y="581" width="18.6" height="15.0" fill="rgb(246,5,29)" rx="2" ry="2" />
+<text  x="214.98" y="591.5" ></text>
+</g>
+<g >
+<title>IPC::internal::MessagePipeReader::Send(std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;) (13 samples, 2.93%)</title><rect x="884.4" y="581" width="34.5" height="15.0" fill="rgb(231,197,50)" rx="2" ry="2" />
+<text  x="887.37" y="591.5" >IP..</text>
+</g>
+<g >
+<title>blink::VideoTrackAdapter::VideoFrameResolutionAdapter::DeliverFrame(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks const&amp;, bool) (8 samples, 1.80%)</title><rect x="568.1" y="277" width="21.3" height="15.0" fill="rgb(221,29,27)" rx="2" ry="2" />
+<text  x="571.11" y="287.5" >b..</text>
+</g>
+<g >
+<title>malloc (4 samples, 0.90%)</title><rect x="623.9" y="581" width="10.6" height="15.0" fill="rgb(210,53,37)" rx="2" ry="2" />
+<text  x="626.92" y="591.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() (1 samples, 0.23%)</title><rect x="998.6" y="613" width="2.7" height="15.0" fill="rgb(253,104,36)" rx="2" ry="2" />
+<text  x="1001.65" y="623.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="323.6" y="533" width="2.7" height="15.0" fill="rgb(218,89,2)" rx="2" ry="2" />
+<text  x="326.60" y="543.5" ></text>
+</g>
+<g >
+<title>IPC::(anonymous namespace)::ChannelAssociatedGroupController::Endpoint::SendMessage(mojo::Message*) (7 samples, 1.58%)</title><rect x="860.5" y="533" width="18.6" height="15.0" fill="rgb(215,215,9)" rx="2" ry="2" />
+<text  x="863.45" y="543.5" ></text>
+</g>
+<g >
+<title>blink::VideoTrackAdapter::CalculateDesiredSize(bool, gfx::Size const&amp;, blink::VideoTrackAdapterSettings const&amp;, gfx::Size*) (1 samples, 0.23%)</title><rect x="958.8" y="549" width="2.6" height="15.0" fill="rgb(252,109,53)" rx="2" ry="2" />
+<text  x="961.78" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::Core::WriteMessage(unsigned int, unsigned long, MojoWriteMessageOptions const*) (5 samples, 1.13%)</title><rect x="926.9" y="485" width="13.3" height="15.0" fill="rgb(207,60,20)" rx="2" ry="2" />
+<text  x="929.89" y="495.5" ></text>
+</g>
+<g >
+<title>set_tiny_meta_header_in_use (1 samples, 0.23%)</title><rect x="273.1" y="357" width="2.7" height="15.0" fill="rgb(207,216,33)" rx="2" ry="2" />
+<text  x="276.11" y="367.5" ></text>
+</g>
+<g >
+<title>base::mac::ScopedNSAutoreleasePool::~ScopedNSAutoreleasePool() (1 samples, 0.23%)</title><rect x="841.8" y="677" width="2.7" height="15.0" fill="rgb(251,2,40)" rx="2" ry="2" />
+<text  x="844.85" y="687.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="79.1" y="597" width="2.7" height="15.0" fill="rgb(253,207,12)" rx="2" ry="2" />
+<text  x="82.10" y="607.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 0.45%)</title><rect x="1144.8" y="645" width="5.3" height="15.0" fill="rgb(220,149,24)" rx="2" ry="2" />
+<text  x="1147.82" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="209.3" y="581" width="2.7" height="15.0" fill="rgb(243,39,30)" rx="2" ry="2" />
+<text  x="212.32" y="591.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Event::Deserialize(void const*, unsigned long) (5 samples, 1.13%)</title><rect x="217.3" y="565" width="13.3" height="15.0" fill="rgb(222,144,34)" rx="2" ry="2" />
+<text  x="220.30" y="575.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.23%)</title><rect x="1126.2" y="629" width="2.7" height="15.0" fill="rgb(240,114,47)" rx="2" ry="2" />
+<text  x="1129.22" y="639.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueue::GetFrontTaskEnqueueOrder(base::sequence_manager::internal::EnqueueOrder*) const (1 samples, 0.23%)</title><rect x="1067.7" y="533" width="2.7" height="15.0" fill="rgb(211,36,12)" rx="2" ry="2" />
+<text  x="1070.75" y="543.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.23%)</title><rect x="1094.3" y="549" width="2.7" height="15.0" fill="rgb(213,163,25)" rx="2" ry="2" />
+<text  x="1097.32" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeController::SendUserMessage(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;) (6 samples, 1.35%)</title><rect x="897.7" y="437" width="15.9" height="15.0" fill="rgb(240,144,20)" rx="2" ry="2" />
+<text  x="900.66" y="447.5" ></text>
+</g>
+<g >
+<title>free_tiny (1 samples, 0.23%)</title><rect x="530.9" y="309" width="2.7" height="15.0" fill="rgb(249,112,14)" rx="2" ry="2" />
+<text  x="533.90" y="319.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GuardedTaskPoster::PostTask(base::sequence_manager::internal::PostedTask) (3 samples, 0.68%)</title><rect x="570.8" y="117" width="7.9" height="15.0" fill="rgb(207,90,13)" rx="2" ry="2" />
+<text  x="573.77" y="127.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 0.23%)</title><rect x="238.6" y="501" width="2.6" height="15.0" fill="rgb(228,40,21)" rx="2" ry="2" />
+<text  x="241.56" y="511.5" ></text>
+</g>
+<g >
+<title>base::time_internal::SaturatedSub(long long, base::TimeDelta) (1 samples, 0.23%)</title><rect x="565.5" y="261" width="2.6" height="15.0" fill="rgb(240,33,0)" rx="2" ry="2" />
+<text  x="568.45" y="271.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostTask(base::sequence_manager::internal::PostedTask) (19 samples, 4.28%)</title><rect x="437.9" y="469" width="50.5" height="15.0" fill="rgb(209,130,23)" rx="2" ry="2" />
+<text  x="440.88" y="479.5" >base:..</text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="1179.4" y="613" width="2.6" height="15.0" fill="rgb(221,223,44)" rx="2" ry="2" />
+<text  x="1182.37" y="623.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (2 samples, 0.45%)</title><rect x="629.2" y="501" width="5.3" height="15.0" fill="rgb(214,140,46)" rx="2" ry="2" />
+<text  x="632.23" y="511.5" ></text>
+</g>
+<g >
+<title>bool base::internal::QueryCancellationTraits&lt;base::internal::BindState&lt;void (content::WebMediaPlayerMS::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;), base::WeakPtr&lt;content::WebMediaPlayerMS::FrameDeliverer&gt; &gt; &gt;(base::internal::BindStateBase const*, base::internal::BindStateBase::CancellationQueryMode) (1 samples, 0.23%)</title><rect x="1115.6" y="549" width="2.6" height="15.0" fill="rgb(220,182,44)" rx="2" ry="2" />
+<text  x="1118.59" y="559.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskTracker::BeforeQueueTaskSource(base::TaskShutdownBehavior) (1 samples, 0.23%)</title><rect x="411.3" y="453" width="2.7" height="15.0" fill="rgb(229,102,45)" rx="2" ry="2" />
+<text  x="414.31" y="463.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (2 samples, 0.45%)</title><rect x="225.3" y="501" width="5.3" height="15.0" fill="rgb(240,100,49)" rx="2" ry="2" />
+<text  x="228.27" y="511.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 0.23%)</title><rect x="879.1" y="341" width="2.6" height="15.0" fill="rgb(220,13,33)" rx="2" ry="2" />
+<text  x="882.05" y="351.5" ></text>
+</g>
+<g >
+<title>mojo::Message::Message() (2 samples, 0.45%)</title><rect x="602.7" y="453" width="5.3" height="15.0" fill="rgb(243,147,13)" rx="2" ry="2" />
+<text  x="605.66" y="463.5" ></text>
+</g>
+<g >
+<title>base::SequencedTaskRunnerHandle::Get() (1 samples, 0.23%)</title><rect x="966.8" y="421" width="2.6" height="15.0" fill="rgb(230,195,7)" rx="2" ry="2" />
+<text  x="969.76" y="431.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::SendUserMessageInternal(mojo::core::ports::PortRef const&amp;, std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*) (6 samples, 1.35%)</title><rect x="897.7" y="405" width="15.9" height="15.0" fill="rgb(235,49,16)" rx="2" ry="2" />
+<text  x="900.66" y="415.5" ></text>
+</g>
+<g >
+<title>std::__Cr::vector&lt;mojo::core::RequestContext::WatchNotifyFinalizer, base::StackAllocator&lt;mojo::core::RequestContext::WatchNotifyFinalizer, 8ul&gt; &gt;::reserve(unsigned long) (1 samples, 0.23%)</title><rect x="185.4" y="581" width="2.7" height="15.0" fill="rgb(220,213,10)" rx="2" ry="2" />
+<text  x="188.41" y="591.5" ></text>
+</g>
+<g >
+<title>mojo::Connector::Accept(mojo::Message*) (7 samples, 1.58%)</title><rect x="895.0" y="501" width="18.6" height="15.0" fill="rgb(249,209,26)" rx="2" ry="2" />
+<text  x="898.00" y="511.5" ></text>
+</g>
+<g >
+<title>mojo::FilterChain::Accept(mojo::Message*) (31 samples, 6.98%)</title><rect x="509.6" y="437" width="82.4" height="15.0" fill="rgb(224,46,25)" rx="2" ry="2" />
+<text  x="512.64" y="447.5" >mojo::Fil..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (4 samples, 0.90%)</title><rect x="578.7" y="165" width="10.7" height="15.0" fill="rgb(234,208,16)" rx="2" ry="2" />
+<text  x="581.74" y="175.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="610.6" y="549" width="2.7" height="15.0" fill="rgb(252,30,21)" rx="2" ry="2" />
+<text  x="613.63" y="559.5" ></text>
+</g>
+<g >
+<title>__psynch_mutexdrop (1 samples, 0.23%)</title><rect x="477.7" y="373" width="2.7" height="15.0" fill="rgb(213,89,54)" rx="2" ry="2" />
+<text  x="480.75" y="383.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (1 samples, 0.23%)</title><rect x="581.4" y="69" width="2.7" height="15.0" fill="rgb(212,122,21)" rx="2" ry="2" />
+<text  x="584.40" y="79.5" ></text>
+</g>
+<g >
+<title>base::internal::WeakReferenceOwner::GetRef() const (1 samples, 0.23%)</title><rect x="972.1" y="437" width="2.6" height="15.0" fill="rgb(212,182,44)" rx="2" ry="2" />
+<text  x="975.07" y="447.5" ></text>
+</g>
+<g >
+<title>mojo::internal::MultiplexRouter::Accept(mojo::Message*) (21 samples, 4.73%)</title><rect x="536.2" y="421" width="55.8" height="15.0" fill="rgb(205,60,37)" rx="2" ry="2" />
+<text  x="539.22" y="431.5" >mojo:..</text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="568.1" y="245" width="2.7" height="15.0" fill="rgb(218,95,51)" rx="2" ry="2" />
+<text  x="571.11" y="255.5" ></text>
+</g>
+<g >
+<title>IPC::(anonymous namespace)::ChannelAssociatedGroupController::SendMessage(mojo::Message*) (1 samples, 0.23%)</title><rect x="855.1" y="517" width="2.7" height="15.0" fill="rgb(209,174,13)" rx="2" ry="2" />
+<text  x="858.14" y="527.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueue::TakeTaskFromWorkQueue() (3 samples, 0.68%)</title><rect x="1118.2" y="597" width="8.0" height="15.0" fill="rgb(244,172,24)" rx="2" ry="2" />
+<text  x="1121.24" y="607.5" ></text>
+</g>
+<g >
+<title>pthread_getspecific (1 samples, 0.23%)</title><rect x="1059.8" y="517" width="2.6" height="15.0" fill="rgb(209,37,38)" rx="2" ry="2" />
+<text  x="1062.77" y="527.5" ></text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::DetachFromSequence() (1 samples, 0.23%)</title><rect x="549.5" y="293" width="2.7" height="15.0" fill="rgb(249,101,14)" rx="2" ry="2" />
+<text  x="552.50" y="303.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;base::OnceCallback&lt;void (double)&gt;, void&gt;::Invoke&lt;base::OnceCallback&lt;void (double)&gt;, double&gt;(base::OnceCallback&lt;void (double)&gt;&amp;&amp;, double&amp;&amp;) (9 samples, 2.03%)</title><rect x="918.9" y="629" width="23.9" height="15.0" fill="rgb(253,73,11)" rx="2" ry="2" />
+<text  x="921.92" y="639.5" >v..</text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (blink::MediaStreamVideoRendererSink::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), WTF::CrossThreadUnretainedWrapper&lt;blink::MediaStreamVideoRendererSink::FrameDeliverer&gt; &gt;, void (scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks)&gt;::Run(base::internal::BindStateBase*, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;, base::TimeTicks&amp;&amp;) (4 samples, 0.90%)</title><rect x="964.1" y="501" width="10.6" height="15.0" fill="rgb(245,184,4)" rx="2" ry="2" />
+<text  x="967.10" y="511.5" ></text>
+</g>
+<g >
+<title>base::OnceCallback&lt;void (double)&gt; media::BindToCurrentLoop&lt;double&gt;(base::OnceCallback&lt;void (double)&gt;) (1 samples, 0.23%)</title><rect x="546.8" y="309" width="2.7" height="15.0" fill="rgb(221,43,29)" rx="2" ry="2" />
+<text  x="549.85" y="319.5" ></text>
+</g>
+<g >
+<title>base::internal::WeakReference::IsValid() const (1 samples, 0.23%)</title><rect x="918.9" y="597" width="2.7" height="15.0" fill="rgb(243,31,27)" rx="2" ry="2" />
+<text  x="921.92" y="607.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::LazyNow::Now() (2 samples, 0.45%)</title><rect x="980.0" y="597" width="5.4" height="15.0" fill="rgb(251,173,32)" rx="2" ry="2" />
+<text  x="983.05" y="607.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() const (2 samples, 0.45%)</title><rect x="985.4" y="613" width="5.3" height="15.0" fill="rgb(219,117,39)" rx="2" ry="2" />
+<text  x="988.36" y="623.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (2 samples, 0.45%)</title><rect x="318.3" y="517" width="5.3" height="15.0" fill="rgb(245,46,47)" rx="2" ry="2" />
+<text  x="321.29" y="527.5" ></text>
+</g>
+<g >
+<title>tiny_size (1 samples, 0.23%)</title><rect x="549.5" y="261" width="2.7" height="15.0" fill="rgb(252,50,9)" rx="2" ry="2" />
+<text  x="552.50" y="271.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;void (blink::MediaStreamVideoTrack::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), void&gt;::Invoke&lt;void (blink::MediaStreamVideoTrack::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;blink::MediaStreamVideoTrack::FrameDeliverer&gt; const&amp;, scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks&gt;(void (blink::MediaStreamVideoTrack::FrameDeliverer::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::TimeTicks), scoped_refptr&lt;blink::MediaStreamVideoTrack::FrameDeliverer&gt; const&amp;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;, base::TimeTicks&amp;&amp;) (7 samples, 1.58%)</title><rect x="570.8" y="245" width="18.6" height="15.0" fill="rgb(230,103,2)" rx="2" ry="2" />
+<text  x="573.77" y="255.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::MachMessageSendLocked(mach_msg_header_t*) (3 samples, 0.68%)</title><rect x="863.1" y="293" width="8.0" height="15.0" fill="rgb(237,108,21)" rx="2" ry="2" />
+<text  x="866.11" y="303.5" ></text>
+</g>
+<g >
+<title>mojo::SimpleWatcher::OnHandleReady(int, unsigned int, mojo::HandleSignalsState const&amp;) (41 samples, 9.23%)</title><rect x="501.7" y="517" width="108.9" height="15.0" fill="rgb(224,227,39)" rx="2" ry="2" />
+<text  x="504.67" y="527.5" >mojo::SimpleW..</text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::GetHandleSignalsStateNoLock() const (1 samples, 0.23%)</title><rect x="241.2" y="501" width="2.7" height="15.0" fill="rgb(227,73,20)" rx="2" ry="2" />
+<text  x="244.22" y="511.5" ></text>
+</g>
+<g >
+<title>IPC::(anonymous namespace)::ChannelAssociatedGroupController::SendMessage(mojo::Message*) (7 samples, 1.58%)</title><rect x="895.0" y="517" width="18.6" height="15.0" fill="rgb(235,179,30)" rx="2" ry="2" />
+<text  x="898.00" y="527.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::AcceptEvent(std::__Cr::unique_ptr&lt;mojo::core::ports::Event, std::__Cr::default_delete&lt;mojo::core::ports::Event&gt; &gt;) (43 samples, 9.68%)</title><rect x="230.6" y="581" width="114.3" height="15.0" fill="rgb(247,203,4)" rx="2" ry="2" />
+<text  x="233.59" y="591.5" >mojo::core::po..</text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 0.23%)</title><rect x="491.0" y="501" width="2.7" height="15.0" fill="rgb(230,0,36)" rx="2" ry="2" />
+<text  x="494.04" y="511.5" ></text>
+</g>
+<g >
+<title>base::TaskAnnotator::ScopedSetIpcHash::~ScopedSetIpcHash() (2 samples, 0.45%)</title><rect x="525.6" y="341" width="5.3" height="15.0" fill="rgb(252,190,16)" rx="2" ry="2" />
+<text  x="528.59" y="351.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::Node::PrepareToForwardUserMessage(mojo::core::ports::PortRef const&amp;, mojo::core::ports::Port::State, bool, mojo::core::ports::UserMessageEvent*, mojo::core::ports::NodeName*) (1 samples, 0.23%)</title><rect x="910.9" y="389" width="2.7" height="15.0" fill="rgb(233,136,46)" rx="2" ry="2" />
+<text  x="913.95" y="399.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_destroy (1 samples, 0.23%)</title><rect x="972.1" y="373" width="2.6" height="15.0" fill="rgb(216,175,53)" rx="2" ry="2" />
+<text  x="975.07" y="383.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (3 samples, 0.68%)</title><rect x="626.6" y="549" width="7.9" height="15.0" fill="rgb(210,196,18)" rx="2" ry="2" />
+<text  x="629.58" y="559.5" ></text>
+</g>
+<g >
+<title>base::internal::(anonymous namespace)::WorkerThreadDelegate::EnqueueTaskSource(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (1 samples, 0.23%)</title><rect x="950.8" y="485" width="2.7" height="15.0" fill="rgb(218,96,40)" rx="2" ry="2" />
+<text  x="953.81" y="495.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (3 samples, 0.68%)</title><rect x="1022.6" y="613" width="7.9" height="15.0" fill="rgb(245,127,37)" rx="2" ry="2" />
+<text  x="1025.57" y="623.5" ></text>
+</g>
+<g >
+<title>std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;* logging::CheckNEImpl&lt;(anonymous namespace)::TlsVectorEntry*, void*&gt;((anonymous namespace)::TlsVectorEntry* const&amp;, void* const&amp;, char const*) (1 samples, 0.23%)</title><rect x="966.8" y="389" width="2.6" height="15.0" fill="rgb(245,158,45)" rx="2" ry="2" />
+<text  x="969.76" y="399.5" ></text>
+</g>
+<g >
+<title>mojo::core::Watch::InvokeCallback(unsigned int, mojo::core::HandleSignalsState const&amp;, unsigned int) (93 samples, 20.95%)</title><rect x="366.1" y="581" width="247.2" height="15.0" fill="rgb(240,2,47)" rx="2" ry="2" />
+<text  x="369.13" y="591.5" >mojo::core::Watch::InvokeCallbac..</text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::AddRef() const (1 samples, 0.23%)</title><rect x="302.3" y="517" width="2.7" height="15.0" fill="rgb(235,183,26)" rx="2" ry="2" />
+<text  x="305.34" y="527.5" ></text>
+</g>
+<g >
+<title>mojo::core::UserMessageImpl::~UserMessageImpl() (1 samples, 0.23%)</title><rect x="589.4" y="309" width="2.6" height="15.0" fill="rgb(220,208,38)" rx="2" ry="2" />
+<text  x="592.37" y="319.5" ></text>
+</g>
+<g >
+<title>mojo::SimpleWatcher::DiscardReadyState(base::RepeatingCallback&lt;void (unsigned int)&gt; const&amp;, unsigned int, mojo::HandleSignalsState const&amp;) (41 samples, 9.23%)</title><rect x="501.7" y="501" width="108.9" height="15.0" fill="rgb(223,21,13)" rx="2" ry="2" />
+<text  x="504.67" y="511.5" >mojo::SimpleW..</text>
+</g>
+<g >
+<title>base::allocator::(anonymous namespace)::MallocImpl(base::allocator::AllocatorDispatch const*, unsigned long, void*) (1 samples, 0.23%)</title><rect x="626.6" y="517" width="2.6" height="15.0" fill="rgb(252,180,5)" rx="2" ry="2" />
+<text  x="629.58" y="527.5" ></text>
+</g>
+<g >
+<title>base::debug::ScopedLockAcquireActivity::ScopedLockAcquireActivity(void const*, base::internal::LockImpl const*) (1 samples, 0.23%)</title><rect x="1019.9" y="597" width="2.7" height="15.0" fill="rgb(216,76,51)" rx="2" ry="2" />
+<text  x="1022.91" y="607.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::WakeUp() (7 samples, 1.58%)</title><rect x="414.0" y="469" width="18.6" height="15.0" fill="rgb(208,56,3)" rx="2" ry="2" />
+<text  x="416.96" y="479.5" ></text>
+</g>
+<g >
+<title>base::internal::(anonymous namespace)::WorkerThreadDelegate::PostTaskNow(scoped_refptr&lt;base::internal::Sequence&gt;, base::internal::Task) (17 samples, 3.83%)</title><rect x="387.4" y="485" width="45.2" height="15.0" fill="rgb(233,171,2)" rx="2" ry="2" />
+<text  x="390.39" y="495.5" >base..</text>
+</g>
+<g >
+<title>content::WebMediaPlayerMS::FrameDeliverer::OnVideoFrame(scoped_refptr&lt;media::VideoFrame&gt;) (3 samples, 0.68%)</title><rect x="570.8" y="165" width="7.9" height="15.0" fill="rgb(247,172,42)" rx="2" ry="2" />
+<text  x="573.77" y="175.5" ></text>
+</g>
+<g >
+<title>mach_msg (4 samples, 0.90%)</title><rect x="515.0" y="277" width="10.6" height="15.0" fill="rgb(249,104,19)" rx="2" ry="2" />
+<text  x="517.95" y="287.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 0.23%)</title><rect x="1147.5" y="613" width="2.6" height="15.0" fill="rgb(209,90,14)" rx="2" ry="2" />
+<text  x="1150.48" y="623.5" ></text>
+</g>
+<g >
+<title>mojo::core::NodeChannel::WriteChannelMessage(std::__Cr::unique_ptr&lt;mojo::core::Channel::Message, std::__Cr::default_delete&lt;mojo::core::Channel::Message&gt; &gt;) (5 samples, 1.13%)</title><rect x="897.7" y="341" width="13.2" height="15.0" fill="rgb(226,101,36)" rx="2" ry="2" />
+<text  x="900.66" y="351.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::UserMessageEvent::~UserMessageEvent() (1 samples, 0.23%)</title><rect x="589.4" y="341" width="2.6" height="15.0" fill="rgb(209,92,13)" rx="2" ry="2" />
+<text  x="592.37" y="351.5" ></text>
+</g>
+<g >
+<title>mojo::core::Channel::Message::Message(unsigned long, unsigned long, unsigned long, mojo::core::Channel::Message::MessageType) (5 samples, 1.13%)</title><rect x="193.4" y="597" width="13.3" height="15.0" fill="rgb(234,100,23)" rx="2" ry="2" />
+<text  x="196.38" y="607.5" ></text>
+</g>
+<g >
+<title>base::SequenceCheckerImpl::CalledOnValidSequence() const (1 samples, 0.23%)</title><rect x="876.4" y="485" width="2.7" height="15.0" fill="rgb(226,16,48)" rx="2" ry="2" />
+<text  x="879.40" y="495.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (2 samples, 0.45%)</title><rect x="629.2" y="517" width="5.3" height="15.0" fill="rgb(208,15,35)" rx="2" ry="2" />
+<text  x="632.23" y="527.5" ></text>
+</g>
+<g >
+<title>MojoAppendMessageData (1 samples, 0.23%)</title><rect x="940.2" y="533" width="2.6" height="15.0" fill="rgb(238,98,46)" rx="2" ry="2" />
+<text  x="943.18" y="543.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::RunsTasksInCurrentSequence() const (2 samples, 0.45%)</title><rect x="493.7" y="517" width="5.3" height="15.0" fill="rgb(215,31,43)" rx="2" ry="2" />
+<text  x="496.69" y="527.5" ></text>
+</g>
+<g >
+<title>thread_start (444 samples, 100.00%)</title><rect x="10.0" y="821" width="1180.0" height="15.0" fill="rgb(208,130,32)" rx="2" ry="2" />
+<text  x="13.00" y="831.5" >thread_start</text>
+</g>
+<g >
+<title>base::Lock::CheckUnheldAndMark() (1 samples, 0.23%)</title><rect x="257.2" y="469" width="2.6" height="15.0" fill="rgb(216,153,50)" rx="2" ry="2" />
+<text  x="260.16" y="479.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (1 samples, 0.23%)</title><rect x="969.4" y="421" width="2.7" height="15.0" fill="rgb(217,24,11)" rx="2" ry="2" />
+<text  x="972.41" y="431.5" ></text>
+</g>
+<g >
+<title>base::NumberToString(int) (1 samples, 0.23%)</title><rect x="554.8" y="277" width="2.7" height="15.0" fill="rgb(245,89,10)" rx="2" ry="2" />
+<text  x="557.82" y="287.5" ></text>
+</g>
+<g >
+<title>base::internal::CallbackBase::~CallbackBase() (1 samples, 0.23%)</title><rect x="408.6" y="453" width="2.7" height="15.0" fill="rgb(210,201,17)" rx="2" ry="2" />
+<text  x="411.65" y="463.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (1 samples, 0.23%)</title><rect x="969.4" y="357" width="2.7" height="15.0" fill="rgb(224,95,36)" rx="2" ry="2" />
+<text  x="972.41" y="367.5" ></text>
+</g>
+<g >
+<title>mojo::core::ports::(anonymous namespace)::UpdateTLS(mojo::core::ports::PortLocker*, mojo::core::ports::PortLocker*) (2 samples, 0.45%)</title><rect x="305.0" y="501" width="5.3" height="15.0" fill="rgb(234,172,1)" rx="2" ry="2" />
+<text  x="308.00" y="511.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.23%)</title><rect x="1150.1" y="629" width="2.7" height="15.0" fill="rgb(236,23,54)" rx="2" ry="2" />
+<text  x="1153.14" y="639.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.23%)</title><rect x="966.8" y="405" width="2.6" height="15.0" fill="rgb(206,15,14)" rx="2" ry="2" />
+<text  x="969.76" y="415.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 0.45%)</title><rect x="942.8" y="565" width="5.4" height="15.0" fill="rgb(235,71,44)" rx="2" ry="2" />
+<text  x="945.84" y="575.5" ></text>
+</g>
+<g >
+<title>media::VideoRendererAlgorithm::EnqueueFrame(scoped_refptr&lt;media::VideoFrame&gt;) (1 samples, 0.23%)</title><rect x="956.1" y="549" width="2.7" height="15.0" fill="rgb(229,100,4)" rx="2" ry="2" />
+<text  x="959.13" y="559.5" ></text>
+</g>
+<g >
+<title>mojo::core::UserMessageImpl::~UserMessageImpl() (1 samples, 0.23%)</title><rect x="589.4" y="325" width="2.6" height="15.0" fill="rgb(214,152,29)" rx="2" ry="2" />
+<text  x="592.37" y="335.5" ></text>
+</g>
+<g >
+<title>pthread_getspecific (1 samples, 0.23%)</title><rect x="73.8" y="565" width="2.6" height="15.0" fill="rgb(242,14,28)" rx="2" ry="2" />
+<text  x="76.78" y="575.5" ></text>
+</g>
+<g >
+<title>mojo::core::MessagePipeDispatcher::ReadMessage(std::__Cr::unique_ptr&lt;mojo::core::ports::UserMessageEvent, std::__Cr::default_delete&lt;mojo::core::ports::UserMessageEvent&gt; &gt;*) (4 samples, 0.90%)</title><rect x="592.0" y="405" width="10.7" height="15.0" fill="rgb(232,151,36)" rx="2" ry="2" />
+<text  x="595.03" y="415.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (2 samples, 0.45%)</title><rect x="934.9" y="277" width="5.3" height="15.0" fill="rgb(225,83,20)" rx="2" ry="2" />
+<text  x="937.86" y="287.5" ></text>
+</g>
+<g >
+<title>IPC::ChannelProxy::Context::OnSendMessage(std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;) (1 samples, 0.23%)</title><rect x="855.1" y="613" width="2.7" height="15.0" fill="rgb(217,73,50)" rx="2" ry="2" />
+<text  x="858.14" y="623.5" ></text>
+</g>
+<g >
+<title>base::subtle::TimeTicksNowIgnoringOverride() (1 samples, 0.23%)</title><rect x="1075.7" y="549" width="2.7" height="15.0" fill="rgb(249,214,53)" rx="2" ry="2" />
+<text  x="1078.72" y="559.5" ></text>
+</g>
+<g >
+<title>base::MessagePumpKqueue::ProcessEvents(int) (224 samples, 50.45%)</title><rect x="39.2" y="661" width="595.3" height="15.0" fill="rgb(237,121,21)" rx="2" ry="2" />
+<text  x="42.23" y="671.5" >base::MessagePumpKqueue::ProcessEvents(int)</text>
+</g>
+<g >
+<title>IPC::internal::MessagePipeReader::Send(std::__Cr::unique_ptr&lt;IPC::Message, std::__Cr::default_delete&lt;IPC::Message&gt; &gt;) (1 samples, 0.23%)</title><rect x="855.1" y="581" width="2.7" height="15.0" fill="rgb(252,59,26)" rx="2" ry="2" />
+<text  x="858.14" y="591.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostImmediateTaskImpl(base::sequence_manager::internal::PostedTask, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (4 samples, 0.90%)</title><rect x="578.7" y="117" width="10.7" height="15.0" fill="rgb(206,107,39)" rx="2" ry="2" />
+<text  x="581.74" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::main_thread_only() (6 samples, 1.35%)</title><rect x="1126.2" y="661" width="16.0" height="15.0" fill="rgb(246,214,28)" rx="2" ry="2" />
+<text  x="1129.22" y="671.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (2 samples, 0.45%)</title><rect x="1120.9" y="517" width="5.3" height="15.0" fill="rgb(229,215,9)" rx="2" ry="2" />
+<text  x="1123.90" y="527.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckUnheldAndMark() (2 samples, 0.45%)</title><rect x="60.5" y="613" width="5.3" height="15.0" fill="rgb(230,9,28)" rx="2" ry="2" />
+<text  x="63.50" y="623.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Unlock() (1 samples, 0.23%)</title><rect x="873.7" y="373" width="2.7" height="15.0" fill="rgb(241,4,51)" rx="2" ry="2" />
+<text  x="876.74" y="383.5" ></text>
+</g>
+<g >
+<title>mojo::core::(anonymous namespace)::ChannelMac::OnMachMessageReceived(unsigned int) (204 samples, 45.95%)</title><rect x="92.4" y="645" width="542.1" height="15.0" fill="rgb(250,126,1)" rx="2" ry="2" />
+<text  x="95.39" y="655.5" >mojo::core::(anonymous namespace)::ChannelMac::OnMachMessageReceived(unsig..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostTask(base::sequence_manager::internal::PostedTask) (1 samples, 0.23%)</title><rect x="969.4" y="389" width="2.7" height="15.0" fill="rgb(238,191,32)" rx="2" ry="2" />
+<text  x="972.41" y="399.5" ></text>
+</g>
+<g >
+<title>base::internal::IntrusiveHeap&lt;base::internal::PriorityQueue::TaskSourceAndSortKey&gt;::MoveHoleUpAndFillWithElement(unsigned long, base::internal::PriorityQueue::TaskSourceAndSortKey&amp;&amp;) (4 samples, 0.90%)</title><rect x="392.7" y="437" width="10.6" height="15.0" fill="rgb(242,16,43)" rx="2" ry="2" />
+<text  x="395.70" y="447.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Set(void*) (1 samples, 0.23%)</title><rect x="310.3" y="533" width="2.7" height="15.0" fill="rgb(226,219,2)" rx="2" ry="2" />
+<text  x="313.32" y="543.5" ></text>
+</g>
+</g>
+</svg>

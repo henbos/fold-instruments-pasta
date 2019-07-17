@@ -1,0 +1,2677 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="646" onload="init(evt)" viewBox="0 0 1200 646" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="646.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="629" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="629" > </text>
+<g id="frames">
+<g >
+<title>vp8_idct_dequant_0_2x_sse2 (3 samples, 0.36%)</title><rect x="950.3" y="197" width="4.3" height="15.0" fill="rgb(251,164,21)" rx="2" ry="2" />
+<text  x="953.29" y="207.5" ></text>
+</g>
+<g >
+<title>encode_mvcomponent (1 samples, 0.12%)</title><rect x="597.9" y="229" width="1.4" height="15.0" fill="rgb(254,17,17)" rx="2" ry="2" />
+<text  x="600.86" y="239.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Release() (1 samples, 0.12%)</title><rect x="41.4" y="405" width="1.4" height="15.0" fill="rgb(241,117,39)" rx="2" ry="2" />
+<text  x="44.39" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_sixtap_predict8x8_ssse3 (5 samples, 0.60%)</title><rect x="204.1" y="181" width="7.1" height="15.0" fill="rgb(227,69,22)" rx="2" ry="2" />
+<text  x="207.05" y="191.5" ></text>
+</g>
+<g >
+<title>opus_encode_native (62 samples, 7.50%)</title><rect x="1005.9" y="261" width="88.5" height="15.0" fill="rgb(215,77,1)" rx="2" ry="2" />
+<text  x="1008.94" y="271.5" >opus_encod..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostTask(base::sequence_manager::internal::PostedTask) (1 samples, 0.12%)</title><rect x="736.3" y="101" width="1.4" height="15.0" fill="rgb(207,29,50)" rx="2" ry="2" />
+<text  x="739.26" y="111.5" ></text>
+</g>
+<g >
+<title>webrtc::webrtc_repeating_task_impl::RepeatingTaskBase::Run() (3 samples, 0.36%)</title><rect x="1101.5" y="357" width="4.3" height="15.0" fill="rgb(240,208,36)" rx="2" ry="2" />
+<text  x="1104.54" y="367.5" ></text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 0.12%)</title><rect x="1114.4" y="453" width="1.4" height="15.0" fill="rgb(233,203,3)" rx="2" ry="2" />
+<text  x="1117.38" y="463.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Set(void*) (1 samples, 0.12%)</title><rect x="105.6" y="405" width="1.4" height="15.0" fill="rgb(252,106,7)" rx="2" ry="2" />
+<text  x="108.60" y="415.5" ></text>
+</g>
+<g >
+<title>webrtc::webrtc_new_closure_impl::ClosureTask&lt;webrtc::internal::VideoReceiveStream::StartNextDecode()::DecodeTask&gt;::Run() (186 samples, 22.49%)</title><rect x="737.7" y="357" width="265.4" height="15.0" fill="rgb(232,149,45)" rx="2" ry="2" />
+<text  x="740.69" y="367.5" >webrtc::webrtc_new_closure_impl::Cl..</text>
+</g>
+<g >
+<title>vp8cx_mb_init_quantizer (2 samples, 0.24%)</title><rect x="557.9" y="213" width="2.9" height="15.0" fill="rgb(211,128,24)" rx="2" ry="2" />
+<text  x="560.91" y="223.5" ></text>
+</g>
+<g >
+<title>vpx_variance8x8_sse2 (1 samples, 0.12%)</title><rect x="252.6" y="149" width="1.4" height="15.0" fill="rgb(235,223,13)" rx="2" ry="2" />
+<text  x="255.56" y="159.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_lock_wait (2 samples, 0.24%)</title><rect x="1128.6" y="405" width="2.9" height="15.0" fill="rgb(235,49,47)" rx="2" ry="2" />
+<text  x="1131.65" y="415.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (8 samples, 0.97%)</title><rect x="689.2" y="229" width="11.4" height="15.0" fill="rgb(226,158,27)" rx="2" ry="2" />
+<text  x="692.18" y="239.5" ></text>
+</g>
+<g >
+<title>vpx_dc_predictor_16x16_sse2 (1 samples, 0.12%)</title><rect x="450.9" y="181" width="1.4" height="15.0" fill="rgb(240,65,52)" rx="2" ry="2" />
+<text  x="453.89" y="191.5" ></text>
+</g>
+<g >
+<title>pthread_getspecific (1 samples, 0.12%)</title><rect x="57.1" y="389" width="1.4" height="15.0" fill="rgb(242,80,5)" rx="2" ry="2" />
+<text  x="60.09" y="399.5" ></text>
+</g>
+<g >
+<title>vp8_fast_quantize_b_ssse3 (15 samples, 1.81%)</title><rect x="182.6" y="165" width="21.5" height="15.0" fill="rgb(244,151,32)" rx="2" ry="2" />
+<text  x="185.65" y="175.5" >v..</text>
+</g>
+<g >
+<title>base::internal::TaskTrackerPosix::RunOrSkipTask(base::internal::Task, base::internal::TaskSource*, base::TaskTraits const&amp;, bool) (745 samples, 90.08%)</title><rect x="51.4" y="453" width="1063.0" height="15.0" fill="rgb(247,105,37)" rx="2" ry="2" />
+<text  x="54.38" y="463.5" >base::internal::TaskTrackerPosix::RunOrSkipTask(base::internal::Task, base::internal::TaskSource*, base::TaskTraits const&amp;, bool)</text>
+</g>
+<g >
+<title>vp8_write_mvprobs (3 samples, 0.36%)</title><rect x="682.0" y="229" width="4.3" height="15.0" fill="rgb(241,116,11)" rx="2" ry="2" />
+<text  x="685.04" y="239.5" ></text>
+</g>
+<g >
+<title>content::VideoCaptureImpl::DidFinishConsumingFrame(media::VideoFrameMetadata const*, base::OnceCallback&lt;void (double)&gt;) (1 samples, 0.12%)</title><rect x="736.3" y="181" width="1.4" height="15.0" fill="rgb(227,134,34)" rx="2" ry="2" />
+<text  x="739.26" y="191.5" ></text>
+</g>
+<g >
+<title>free (1 samples, 0.12%)</title><rect x="61.4" y="389" width="1.4" height="15.0" fill="rgb(210,169,37)" rx="2" ry="2" />
+<text  x="64.37" y="399.5" ></text>
+</g>
+<g >
+<title>vp8_sixtap_predict8x8_ssse3 (3 samples, 0.36%)</title><rect x="312.5" y="149" width="4.3" height="15.0" fill="rgb(213,42,51)" rx="2" ry="2" />
+<text  x="315.49" y="159.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_h4_ssse3 (1 samples, 0.12%)</title><rect x="179.8" y="149" width="1.4" height="15.0" fill="rgb(207,116,48)" rx="2" ry="2" />
+<text  x="182.79" y="159.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GuardedTaskPoster::PostTask(base::sequence_manager::internal::PostedTask) (1 samples, 0.12%)</title><rect x="736.3" y="117" width="1.4" height="15.0" fill="rgb(229,85,7)" rx="2" ry="2" />
+<text  x="739.26" y="127.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskTracker::UnregisterTaskSource(scoped_refptr&lt;base::internal::TaskSource&gt;) (2 samples, 0.24%)</title><rect x="40.0" y="437" width="2.8" height="15.0" fill="rgb(235,108,40)" rx="2" ry="2" />
+<text  x="42.96" y="447.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 0.12%)</title><rect x="997.4" y="101" width="1.4" height="15.0" fill="rgb(243,224,46)" rx="2" ry="2" />
+<text  x="1000.38" y="111.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (*)((anonymous namespace)::WebrtcTaskQueue*, scoped_refptr&lt;base::RefCountedData&lt;bool&gt; &gt;, std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;), base::internal::UnretainedWrapper&lt;(anonymous namespace)::WebrtcTaskQueue&gt;, scoped_refptr&lt;base::RefCountedData&lt;bool&gt; &gt;, std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt; &gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (699 samples, 84.52%)</title><rect x="108.5" y="389" width="997.3" height="15.0" fill="rgb(226,22,9)" rx="2" ry="2" />
+<text  x="111.45" y="399.5" >base::internal::Invoker&lt;base::internal::BindState&lt;void (*)((anonymous namespace)::WebrtcTaskQueue*, scoped_refptr&lt;base::RefCountedData&lt;boo..</text>
+</g>
+<g >
+<title>base::SequencedTaskRunnerHandle::~SequencedTaskRunnerHandle() (1 samples, 0.12%)</title><rect x="58.5" y="421" width="1.4" height="15.0" fill="rgb(218,226,18)" rx="2" ry="2" />
+<text  x="61.51" y="431.5" ></text>
+</g>
+<g >
+<title>webrtc::video_coding::FrameBuffer::StartWaitForNextFrameOnQueue() (1 samples, 0.12%)</title><rect x="1003.1" y="341" width="1.4" height="15.0" fill="rgb(245,39,38)" rx="2" ry="2" />
+<text  x="1006.08" y="351.5" ></text>
+</g>
+<g >
+<title>vp8_build_inter16x16_predictors_mb (9 samples, 1.09%)</title><rect x="168.4" y="181" width="12.8" height="15.0" fill="rgb(232,51,36)" rx="2" ry="2" />
+<text  x="171.38" y="191.5" ></text>
+</g>
+<g >
+<title>silk_NLSF_del_dec_quant (4 samples, 0.48%)</title><rect x="1064.4" y="149" width="5.7" height="15.0" fill="rgb(254,207,50)" rx="2" ry="2" />
+<text  x="1067.44" y="159.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.12%)</title><rect x="149.8" y="197" width="1.5" height="15.0" fill="rgb(211,59,3)" rx="2" ry="2" />
+<text  x="152.83" y="207.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_other_y_zero_loop (1 samples, 0.12%)</title><rect x="259.7" y="165" width="1.4" height="15.0" fill="rgb(213,137,14)" rx="2" ry="2" />
+<text  x="262.70" y="175.5" ></text>
+</g>
+<g >
+<title>vp8_post_proc_frame (25 samples, 3.02%)</title><rect x="740.5" y="245" width="35.7" height="15.0" fill="rgb(248,43,27)" rx="2" ry="2" />
+<text  x="743.54" y="255.5" >vp8..</text>
+</g>
+<g >
+<title>base::internal::TaskTracker::HasShutdownStarted() const (1 samples, 0.12%)</title><rect x="32.8" y="469" width="1.5" height="15.0" fill="rgb(231,3,45)" rx="2" ry="2" />
+<text  x="35.83" y="479.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_other_y_half_loop (1 samples, 0.12%)</title><rect x="256.8" y="165" width="1.5" height="15.0" fill="rgb(219,142,21)" rx="2" ry="2" />
+<text  x="259.84" y="175.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (2 samples, 0.24%)</title><rect x="299.6" y="165" width="2.9" height="15.0" fill="rgb(230,221,39)" rx="2" ry="2" />
+<text  x="302.65" y="175.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (7 samples, 0.85%)</title><rect x="82.8" y="373" width="10.0" height="15.0" fill="rgb(217,152,49)" rx="2" ry="2" />
+<text  x="85.77" y="383.5" ></text>
+</g>
+<g >
+<title>vp8cx_pick_filter_level_fast (2 samples, 0.24%)</title><rect x="590.7" y="229" width="2.9" height="15.0" fill="rgb(213,210,28)" rx="2" ry="2" />
+<text  x="593.73" y="239.5" ></text>
+</g>
+<g >
+<title>webrtc::RTPSender::SendToNetwork(std::__Cr::unique_ptr&lt;webrtc::RtpPacketToSend, std::__Cr::default_delete&lt;webrtc::RtpPacketToSend&gt; &gt;, webrtc::StorageType) (3 samples, 0.36%)</title><rect x="1094.4" y="293" width="4.3" height="15.0" fill="rgb(213,187,46)" rx="2" ry="2" />
+<text  x="1097.40" y="303.5" ></text>
+</g>
+<g >
+<title>vp8_sixtap_predict8x8_ssse3 (1 samples, 0.12%)</title><rect x="345.3" y="165" width="1.4" height="15.0" fill="rgb(218,79,30)" rx="2" ry="2" />
+<text  x="348.31" y="175.5" ></text>
+</g>
+<g >
+<title>base::TaskAnnotator::RunTask(char const*, base::PendingTask*) (703 samples, 85.01%)</title><rect x="107.0" y="405" width="1003.1" height="15.0" fill="rgb(254,95,38)" rx="2" ry="2" />
+<text  x="110.03" y="415.5" >base::TaskAnnotator::RunTask(char const*, base::PendingTask*)</text>
+</g>
+<g >
+<title>vp8_copy_mem8x8_mmx (3 samples, 0.36%)</title><rect x="816.2" y="213" width="4.2" height="15.0" fill="rgb(226,189,15)" rx="2" ry="2" />
+<text  x="819.17" y="223.5" ></text>
+</g>
+<g >
+<title>quant_partition (1 samples, 0.12%)</title><rect x="1013.1" y="165" width="1.4" height="15.0" fill="rgb(220,151,47)" rx="2" ry="2" />
+<text  x="1016.07" y="175.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskSource::RunIntent::~RunIntent() (1 samples, 0.12%)</title><rect x="1137.2" y="453" width="1.4" height="15.0" fill="rgb(243,10,10)" rx="2" ry="2" />
+<text  x="1140.21" y="463.5" ></text>
+</g>
+<g >
+<title>silk_noise_shape_analysis_FLP (14 samples, 1.69%)</title><rect x="1070.1" y="213" width="20.0" height="15.0" fill="rgb(218,164,29)" rx="2" ry="2" />
+<text  x="1073.15" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_loop_filter_bv_y_sse2 (3 samples, 0.36%)</title><rect x="567.9" y="213" width="4.3" height="15.0" fill="rgb(213,61,10)" rx="2" ry="2" />
+<text  x="570.90" y="223.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::PeekPort(unsigned int, bool) (10 samples, 1.21%)</title><rect x="18.6" y="453" width="14.2" height="15.0" fill="rgb(251,82,37)" rx="2" ry="2" />
+<text  x="21.56" y="463.5" ></text>
+</g>
+<g >
+<title>base::FileDescriptorWatcher::~FileDescriptorWatcher() (1 samples, 0.12%)</title><rect x="51.4" y="437" width="1.4" height="15.0" fill="rgb(251,152,18)" rx="2" ry="2" />
+<text  x="54.38" y="447.5" ></text>
+</g>
+<g >
+<title>vp8_encode_frame (303 samples, 36.64%)</title><rect x="132.7" y="245" width="432.3" height="15.0" fill="rgb(222,212,7)" rx="2" ry="2" />
+<text  x="135.71" y="255.5" >vp8_encode_frame</text>
+</g>
+<g >
+<title>vpx_sad16x16_sse2 (1 samples, 0.12%)</title><rect x="453.7" y="181" width="1.5" height="15.0" fill="rgb(212,203,14)" rx="2" ry="2" />
+<text  x="456.75" y="191.5" ></text>
+</g>
+<g >
+<title>webrtc::VCMCodecTimer::AddTiming(long long, long long) (1 samples, 0.12%)</title><rect x="994.5" y="229" width="1.4" height="15.0" fill="rgb(227,97,27)" rx="2" ry="2" />
+<text  x="997.52" y="239.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (4 samples, 0.48%)</title><rect x="68.5" y="405" width="5.7" height="15.0" fill="rgb(219,155,12)" rx="2" ry="2" />
+<text  x="71.50" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_init_mode_costs (1 samples, 0.12%)</title><rect x="560.8" y="229" width="1.4" height="15.0" fill="rgb(249,207,29)" rx="2" ry="2" />
+<text  x="563.76" y="239.5" ></text>
+</g>
+<g >
+<title>check_dot_artifact_candidate (3 samples, 0.36%)</title><rect x="244.0" y="181" width="4.3" height="15.0" fill="rgb(206,14,27)" rx="2" ry="2" />
+<text  x="247.00" y="191.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d16_v6_ssse3.vp8_filter_block1d16_v6_ssse3_loop (1 samples, 0.12%)</title><rect x="176.9" y="149" width="1.5" height="15.0" fill="rgb(219,208,4)" rx="2" ry="2" />
+<text  x="179.94" y="159.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Unlock() (1 samples, 0.12%)</title><rect x="38.5" y="437" width="1.5" height="15.0" fill="rgb(251,170,48)" rx="2" ry="2" />
+<text  x="41.54" y="447.5" ></text>
+</g>
+<g >
+<title>free_tiny (2 samples, 0.24%)</title><rect x="111.3" y="357" width="2.9" height="15.0" fill="rgb(226,16,10)" rx="2" ry="2" />
+<text  x="114.31" y="367.5" ></text>
+</g>
+<g >
+<title>webrtc::LibvpxVp8Encoder::Encode(webrtc::VideoFrame const&amp;, std::__Cr::vector&lt;webrtc::VideoFrameType, std::__Cr::allocator&lt;webrtc::VideoFrameType&gt; &gt; const*) (425 samples, 51.39%)</title><rect x="125.6" y="309" width="606.4" height="15.0" fill="rgb(239,115,31)" rx="2" ry="2" />
+<text  x="128.57" y="319.5" >webrtc::LibvpxVp8Encoder::Encode(webrtc::VideoFrame const&amp;, std::__Cr::vector&lt;webrt..</text>
+</g>
+<g >
+<title>webrtc::VideoStreamEncoder::EncodeVideoFrame(webrtc::VideoFrame const&amp;, long long) (429 samples, 51.87%)</title><rect x="122.7" y="325" width="612.1" height="15.0" fill="rgb(214,138,28)" rx="2" ry="2" />
+<text  x="125.72" y="335.5" >webrtc::VideoStreamEncoder::EncodeVideoFrame(webrtc::VideoFrame const&amp;, long long)</text>
+</g>
+<g >
+<title>vp8_loop_filter_bh_y_sse2 (1 samples, 0.12%)</title><rect x="958.9" y="197" width="1.4" height="15.0" fill="rgb(215,86,25)" rx="2" ry="2" />
+<text  x="961.85" y="207.5" ></text>
+</g>
+<g >
+<title>vpx_variance16x16_avx2 (3 samples, 0.36%)</title><rect x="475.2" y="181" width="4.2" height="15.0" fill="rgb(229,98,35)" rx="2" ry="2" />
+<text  x="478.15" y="191.5" ></text>
+</g>
+<g >
+<title>webrtc::LibvpxVp8Decoder::Decode(webrtc::EncodedImage const&amp;, bool, long long) (182 samples, 22.01%)</title><rect x="740.5" y="293" width="259.7" height="15.0" fill="rgb(214,91,47)" rx="2" ry="2" />
+<text  x="743.54" y="303.5" >webrtc::LibvpxVp8Decoder::Decode(w..</text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 0.12%)</title><rect x="1097.3" y="261" width="1.4" height="15.0" fill="rgb(228,97,33)" rx="2" ry="2" />
+<text  x="1100.26" y="271.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (1 samples, 0.12%)</title><rect x="729.1" y="53" width="1.5" height="15.0" fill="rgb(222,132,42)" rx="2" ry="2" />
+<text  x="732.13" y="63.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_lock_wait (3 samples, 0.36%)</title><rect x="1115.8" y="405" width="4.3" height="15.0" fill="rgb(238,169,45)" rx="2" ry="2" />
+<text  x="1118.80" y="415.5" ></text>
+</g>
+<g >
+<title>tiny_size (1 samples, 0.12%)</title><rect x="61.4" y="373" width="1.4" height="15.0" fill="rgb(242,206,20)" rx="2" ry="2" />
+<text  x="64.37" y="383.5" ></text>
+</g>
+<g >
+<title>webrtc::SendStatisticsProxy::OnSendEncodedImage(webrtc::EncodedImage const&amp;, webrtc::CodecSpecificInfo const*) (1 samples, 0.12%)</title><rect x="727.7" y="261" width="1.4" height="15.0" fill="rgb(219,203,39)" rx="2" ry="2" />
+<text  x="730.70" y="271.5" ></text>
+</g>
+<g >
+<title>vp8_loop_filter_partial_frame (1 samples, 0.12%)</title><rect x="590.7" y="213" width="1.5" height="15.0" fill="rgb(253,194,13)" rx="2" ry="2" />
+<text  x="593.73" y="223.5" ></text>
+</g>
+<g >
+<title>rtc::TimeMillis() (1 samples, 0.12%)</title><rect x="1003.1" y="325" width="1.4" height="15.0" fill="rgb(232,103,50)" rx="2" ry="2" />
+<text  x="1006.08" y="335.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.12%)</title><rect x="780.5" y="213" width="1.4" height="15.0" fill="rgb(235,62,0)" rx="2" ry="2" />
+<text  x="783.50" y="223.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 0.12%)</title><rect x="1053.0" y="165" width="1.4" height="15.0" fill="rgb(236,164,27)" rx="2" ry="2" />
+<text  x="1056.02" y="175.5" ></text>
+</g>
+<g >
+<title>base::Histogram::AddCount(int, int) (1 samples, 0.12%)</title><rect x="1141.5" y="421" width="1.4" height="15.0" fill="rgb(212,15,48)" rx="2" ry="2" />
+<text  x="1144.49" y="431.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_nonhalf (1 samples, 0.12%)</title><rect x="255.4" y="165" width="1.4" height="15.0" fill="rgb(240,146,44)" rx="2" ry="2" />
+<text  x="258.42" y="175.5" ></text>
+</g>
+<g >
+<title>vpx_subtract_block_sse2.loop_8 (3 samples, 0.36%)</title><rect x="553.6" y="197" width="4.3" height="15.0" fill="rgb(236,122,40)" rx="2" ry="2" />
+<text  x="556.63" y="207.5" ></text>
+</g>
+<g >
+<title>silk_NSQ_wrapper_FLP (19 samples, 2.30%)</title><rect x="1027.3" y="213" width="27.1" height="15.0" fill="rgb(249,171,8)" rx="2" ry="2" />
+<text  x="1030.34" y="223.5" >s..</text>
+</g>
+<g >
+<title>_platform_bzero$VARIANT$Haswell (2 samples, 0.24%)</title><rect x="719.1" y="197" width="2.9" height="15.0" fill="rgb(240,161,44)" rx="2" ry="2" />
+<text  x="722.14" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_mbloop_filter_vertical_edge_uv_sse2 (6 samples, 0.73%)</title><rect x="582.2" y="213" width="8.5" height="15.0" fill="rgb(236,119,19)" rx="2" ry="2" />
+<text  x="585.16" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_loop_filter_bh_y_sse2 (1 samples, 0.12%)</title><rect x="566.5" y="213" width="1.4" height="15.0" fill="rgb(243,82,5)" rx="2" ry="2" />
+<text  x="569.47" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::BeginUnusedPeriod() (1 samples, 0.12%)</title><rect x="1144.3" y="405" width="1.5" height="15.0" fill="rgb(234,48,39)" rx="2" ry="2" />
+<text  x="1147.34" y="415.5" ></text>
+</g>
+<g >
+<title>GetCoeffs (1 samples, 0.12%)</title><rect x="780.5" y="197" width="1.4" height="15.0" fill="rgb(227,49,4)" rx="2" ry="2" />
+<text  x="783.50" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_deblock (25 samples, 3.02%)</title><rect x="740.5" y="229" width="35.7" height="15.0" fill="rgb(217,86,30)" rx="2" ry="2" />
+<text  x="743.54" y="239.5" >vp8..</text>
+</g>
+<g >
+<title>malloc (1 samples, 0.12%)</title><rect x="99.9" y="373" width="1.4" height="15.0" fill="rgb(212,117,36)" rx="2" ry="2" />
+<text  x="102.89" y="383.5" ></text>
+</g>
+<g >
+<title>webrtc::GoogCcNetworkController::MaybeTriggerOnNetworkChanged(webrtc::NetworkControlUpdate*, webrtc::Timestamp) (1 samples, 0.12%)</title><rect x="121.3" y="325" width="1.4" height="15.0" fill="rgb(253,176,45)" rx="2" ry="2" />
+<text  x="124.29" y="335.5" ></text>
+</g>
+<g >
+<title>pthread_cond_broadcast (1 samples, 0.12%)</title><rect x="1140.1" y="405" width="1.4" height="15.0" fill="rgb(229,134,22)" rx="2" ry="2" />
+<text  x="1143.06" y="415.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.12%)</title><rect x="997.4" y="69" width="1.4" height="15.0" fill="rgb(213,105,3)" rx="2" ry="2" />
+<text  x="1000.38" y="79.5" ></text>
+</g>
+<g >
+<title>vp8_dequant_idct_add_y_block_sse2 (8 samples, 0.97%)</title><rect x="151.3" y="197" width="11.4" height="15.0" fill="rgb(233,62,3)" rx="2" ry="2" />
+<text  x="154.26" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::GoogCcNetworkController::OnSentPacket(webrtc::SentPacket) (2 samples, 0.24%)</title><rect x="119.9" y="341" width="2.8" height="15.0" fill="rgb(241,28,25)" rx="2" ry="2" />
+<text  x="122.87" y="351.5" ></text>
+</g>
+<g >
+<title>media::VideoFrame::~VideoFrame() (1 samples, 0.12%)</title><rect x="736.3" y="229" width="1.4" height="15.0" fill="rgb(254,151,5)" rx="2" ry="2" />
+<text  x="739.26" y="239.5" ></text>
+</g>
+<g >
+<title>small_malloc_from_free_list (2 samples, 0.24%)</title><rect x="89.9" y="293" width="2.9" height="15.0" fill="rgb(223,206,40)" rx="2" ry="2" />
+<text  x="92.90" y="303.5" ></text>
+</g>
+<g >
+<title>webrtc::RTPSenderVideo::SendVideo(webrtc::VideoFrameType, signed char, unsigned int, long long, unsigned char const*, unsigned long, webrtc::RTPFragmentationHeader const*, webrtc::RTPVideoHeader const*, absl::optional&lt;long long&gt;) (1 samples, 0.12%)</title><rect x="730.6" y="229" width="1.4" height="15.0" fill="rgb(230,166,1)" rx="2" ry="2" />
+<text  x="733.56" y="239.5" ></text>
+</g>
+<g >
+<title>encode_pulses (1 samples, 0.12%)</title><rect x="1013.1" y="133" width="1.4" height="15.0" fill="rgb(212,197,18)" rx="2" ry="2" />
+<text  x="1016.07" y="143.5" ></text>
+</g>
+<g >
+<title>webrtc::internal::VideoReceiveStream::OnFrame(webrtc::VideoFrame const&amp;) (3 samples, 0.36%)</title><rect x="995.9" y="229" width="4.3" height="15.0" fill="rgb(245,177,0)" rx="2" ry="2" />
+<text  x="998.95" y="239.5" ></text>
+</g>
+<g >
+<title>webrtc::VideoFrame::~VideoFrame() (1 samples, 0.12%)</title><rect x="733.4" y="309" width="1.4" height="15.0" fill="rgb(238,18,17)" rx="2" ry="2" />
+<text  x="736.41" y="319.5" ></text>
+</g>
+<g >
+<title>webrtc::(anonymous namespace)::ResourceOwningTask&lt;webrtc::RtcEvent&gt;::Run() (2 samples, 0.24%)</title><rect x="115.6" y="357" width="2.8" height="15.0" fill="rgb(217,170,47)" rx="2" ry="2" />
+<text  x="118.59" y="367.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.12%)</title><rect x="1127.2" y="437" width="1.4" height="15.0" fill="rgb(232,208,27)" rx="2" ry="2" />
+<text  x="1130.22" y="447.5" ></text>
+</g>
+<g >
+<title>__psynch_mutexdrop (1 samples, 0.12%)</title><rect x="38.5" y="389" width="1.5" height="15.0" fill="rgb(232,88,53)" rx="2" ry="2" />
+<text  x="41.54" y="399.5" ></text>
+</g>
+<g >
+<title>free_tiny (3 samples, 0.36%)</title><rect x="1105.8" y="389" width="4.3" height="15.0" fill="rgb(246,161,28)" rx="2" ry="2" />
+<text  x="1108.82" y="399.5" ></text>
+</g>
+<g >
+<title>small_free_list_remove_ptr_no_clear (1 samples, 0.12%)</title><rect x="737.7" y="277" width="1.4" height="15.0" fill="rgb(215,127,40)" rx="2" ry="2" />
+<text  x="740.69" y="287.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::WorkerThreadDelegateImpl::GetSleepTimeout() (2 samples, 0.24%)</title><rect x="1184.3" y="453" width="2.8" height="15.0" fill="rgb(224,20,10)" rx="2" ry="2" />
+<text  x="1187.29" y="463.5" ></text>
+</g>
+<g >
+<title>base::SampleVectorBase::GetBucketIndex(int) const (2 samples, 0.24%)</title><rect x="52.8" y="389" width="2.9" height="15.0" fill="rgb(236,85,32)" rx="2" ry="2" />
+<text  x="55.81" y="399.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (3 samples, 0.36%)</title><rect x="34.3" y="453" width="4.2" height="15.0" fill="rgb(226,50,17)" rx="2" ry="2" />
+<text  x="37.26" y="463.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Reset() (11 samples, 1.33%)</title><rect x="17.1" y="469" width="15.7" height="15.0" fill="rgb(216,27,47)" rx="2" ry="2" />
+<text  x="20.13" y="479.5" ></text>
+</g>
+<g >
+<title>webrtc::VCMDecodedFrameCallback::Decoded(webrtc::VideoFrame&amp;, absl::optional&lt;int&gt;, absl::optional&lt;unsigned char&gt;) (4 samples, 0.48%)</title><rect x="994.5" y="261" width="5.7" height="15.0" fill="rgb(241,196,38)" rx="2" ry="2" />
+<text  x="997.52" y="271.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_h6_ssse3.filter_block1d8_h6_rowloop_ssse3 (1 samples, 0.12%)</title><rect x="345.3" y="149" width="1.4" height="15.0" fill="rgb(238,63,35)" rx="2" ry="2" />
+<text  x="348.31" y="159.5" ></text>
+</g>
+<g >
+<title>vp8_get_compressed_data (413 samples, 49.94%)</title><rect x="127.0" y="261" width="589.3" height="15.0" fill="rgb(214,2,46)" rx="2" ry="2" />
+<text  x="130.00" y="271.5" >vp8_get_compressed_data</text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_zero_y_half_loop (5 samples, 0.60%)</title><rect x="401.0" y="165" width="7.1" height="15.0" fill="rgb(214,167,41)" rx="2" ry="2" />
+<text  x="403.96" y="175.5" ></text>
+</g>
+<g >
+<title>tlv_get_addr (1 samples, 0.12%)</title><rect x="114.2" y="357" width="1.4" height="15.0" fill="rgb(211,62,30)" rx="2" ry="2" />
+<text  x="117.16" y="367.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::WorkerThreadDelegateImpl::OnWorkerBecomesIdleLockRequired(base::internal::WorkerThread*) (4 samples, 0.48%)</title><rect x="1140.1" y="437" width="5.7" height="15.0" fill="rgb(223,57,38)" rx="2" ry="2" />
+<text  x="1143.06" y="447.5" ></text>
+</g>
+<g >
+<title>webrtc::voe::(anonymous namespace)::RtpPacketSenderProxy::InsertPacket(webrtc::RtpPacketSender::Priority, unsigned int, unsigned short, long long, unsigned long, bool) (1 samples, 0.12%)</title><rect x="1097.3" y="277" width="1.4" height="15.0" fill="rgb(229,203,26)" rx="2" ry="2" />
+<text  x="1100.26" y="287.5" ></text>
+</g>
+<g >
+<title>webrtc::internal::VideoSendStreamImpl::OnEncodedImage(webrtc::EncodedImage const&amp;, webrtc::CodecSpecificInfo const*, webrtc::RTPFragmentationHeader const*) (2 samples, 0.24%)</title><rect x="729.1" y="261" width="2.9" height="15.0" fill="rgb(221,80,11)" rx="2" ry="2" />
+<text  x="732.13" y="271.5" ></text>
+</g>
+<g >
+<title>vp8_loopfilter_frame (19 samples, 2.30%)</title><rect x="566.5" y="245" width="27.1" height="15.0" fill="rgb(215,184,24)" rx="2" ry="2" />
+<text  x="569.47" y="255.5" >v..</text>
+</g>
+<g >
+<title>operator new(unsigned long) (3 samples, 0.36%)</title><rect x="101.3" y="405" width="4.3" height="15.0" fill="rgb(245,96,17)" rx="2" ry="2" />
+<text  x="104.32" y="415.5" ></text>
+</g>
+<g >
+<title>media::VideoFrame::~VideoFrame() (1 samples, 0.12%)</title><rect x="736.3" y="213" width="1.4" height="15.0" fill="rgb(236,5,24)" rx="2" ry="2" />
+<text  x="739.26" y="223.5" ></text>
+</g>
+<g >
+<title>base::allocator::(anonymous namespace)::FreeDefiniteSizeImpl(base::allocator::AllocatorDispatch const*, void*, unsigned long, void*) (2 samples, 0.24%)</title><rect x="79.9" y="389" width="2.9" height="15.0" fill="rgb(206,26,19)" rx="2" ry="2" />
+<text  x="82.92" y="399.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_unlock_slow (1 samples, 0.12%)</title><rect x="38.5" y="421" width="1.5" height="15.0" fill="rgb(216,174,2)" rx="2" ry="2" />
+<text  x="41.54" y="431.5" ></text>
+</g>
+<g >
+<title>backtrace (1 samples, 0.12%)</title><rect x="94.2" y="373" width="1.4" height="15.0" fill="rgb(246,73,47)" rx="2" ry="2" />
+<text  x="97.18" y="383.5" ></text>
+</g>
+<g >
+<title>vp8_copy_mem8x8_mmx (3 samples, 0.36%)</title><rect x="790.5" y="197" width="4.3" height="15.0" fill="rgb(213,151,4)" rx="2" ry="2" />
+<text  x="793.48" y="207.5" ></text>
+</g>
+<g >
+<title>cost (1 samples, 0.12%)</title><rect x="560.8" y="213" width="1.4" height="15.0" fill="rgb(217,98,38)" rx="2" ry="2" />
+<text  x="563.76" y="223.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (4 samples, 0.48%)</title><rect x="62.8" y="309" width="5.7" height="15.0" fill="rgb(236,106,5)" rx="2" ry="2" />
+<text  x="65.79" y="319.5" ></text>
+</g>
+<g >
+<title>_platform_bzero$VARIANT$Haswell (1 samples, 0.12%)</title><rect x="707.7" y="213" width="1.5" height="15.0" fill="rgb(208,66,50)" rx="2" ry="2" />
+<text  x="710.73" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_tree_probs_from_distribution (1 samples, 0.12%)</title><rect x="565.0" y="229" width="1.5" height="15.0" fill="rgb(242,96,47)" rx="2" ry="2" />
+<text  x="568.04" y="239.5" ></text>
+</g>
+<g >
+<title>vp8_mv_ref_probs (3 samples, 0.36%)</title><rect x="288.2" y="165" width="4.3" height="15.0" fill="rgb(249,217,27)" rx="2" ry="2" />
+<text  x="291.23" y="175.5" ></text>
+</g>
+<g >
+<title>DYLD-STUB$$pthread_getspecific (1 samples, 0.12%)</title><rect x="37.1" y="437" width="1.4" height="15.0" fill="rgb(222,206,35)" rx="2" ry="2" />
+<text  x="40.11" y="447.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_v6_ssse3 (1 samples, 0.12%)</title><rect x="984.5" y="197" width="1.5" height="15.0" fill="rgb(243,38,5)" rx="2" ry="2" />
+<text  x="987.53" y="207.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_other_y_other_loop (1 samples, 0.12%)</title><rect x="258.3" y="165" width="1.4" height="15.0" fill="rgb(210,202,13)" rx="2" ry="2" />
+<text  x="261.27" y="175.5" ></text>
+</g>
+<g >
+<title>_pthread_body (827 samples, 100.00%)</title><rect x="10.0" y="533" width="1180.0" height="15.0" fill="rgb(235,38,8)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" >_pthread_body</text>
+</g>
+<g >
+<title>alg_quant (1 samples, 0.12%)</title><rect x="1013.1" y="149" width="1.4" height="15.0" fill="rgb(223,184,4)" rx="2" ry="2" />
+<text  x="1016.07" y="159.5" ></text>
+</g>
+<g >
+<title>vp8_compute_skin_block (1 samples, 0.12%)</title><rect x="131.3" y="245" width="1.4" height="15.0" fill="rgb(231,129,37)" rx="2" ry="2" />
+<text  x="134.28" y="255.5" ></text>
+</g>
+<g >
+<title>vpx_sad16x16_sse2.loop (14 samples, 1.69%)</title><rect x="455.2" y="181" width="20.0" height="15.0" fill="rgb(218,79,49)" rx="2" ry="2" />
+<text  x="458.18" y="191.5" ></text>
+</g>
+<g >
+<title>webrtc::PercentileFilter&lt;long long&gt;::Insert(long long const&amp;) (1 samples, 0.12%)</title><rect x="994.5" y="213" width="1.4" height="15.0" fill="rgb(229,2,36)" rx="2" ry="2" />
+<text  x="997.52" y="223.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (3 samples, 0.36%)</title><rect x="69.9" y="341" width="4.3" height="15.0" fill="rgb(224,123,50)" rx="2" ry="2" />
+<text  x="72.93" y="351.5" ></text>
+</g>
+<g >
+<title>write_component_probs (2 samples, 0.24%)</title><rect x="683.5" y="213" width="2.8" height="15.0" fill="rgb(219,24,45)" rx="2" ry="2" />
+<text  x="686.47" y="223.5" ></text>
+</g>
+<g >
+<title>base::SampleVectorBase::Accumulate(int, int) (1 samples, 0.12%)</title><rect x="1141.5" y="405" width="1.4" height="15.0" fill="rgb(217,187,15)" rx="2" ry="2" />
+<text  x="1144.49" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_h6_ssse3.filter_block1d8_h6_rowloop_ssse3 (1 samples, 0.12%)</title><rect x="315.3" y="133" width="1.5" height="15.0" fill="rgb(238,164,36)" rx="2" ry="2" />
+<text  x="318.34" y="143.5" ></text>
+</g>
+<g >
+<title>clt_mdct_forward_c (2 samples, 0.24%)</title><rect x="1008.8" y="213" width="2.8" height="15.0" fill="rgb(236,12,15)" rx="2" ry="2" />
+<text  x="1011.79" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::GetLastUsedTime() const (1 samples, 0.12%)</title><rect x="1145.8" y="437" width="1.4" height="15.0" fill="rgb(211,15,19)" rx="2" ry="2" />
+<text  x="1148.77" y="447.5" ></text>
+</g>
+<g >
+<title>opus_fft_c (1 samples, 0.12%)</title><rect x="1021.6" y="213" width="1.5" height="15.0" fill="rgb(223,107,32)" rx="2" ry="2" />
+<text  x="1024.63" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_copy_mem16x16_sse2 (2 samples, 0.24%)</title><rect x="305.4" y="149" width="2.8" height="15.0" fill="rgb(208,12,25)" rx="2" ry="2" />
+<text  x="308.36" y="159.5" ></text>
+</g>
+<g >
+<title>vp8_loop_filter_mbv_sse2 (4 samples, 0.48%)</title><rect x="572.2" y="213" width="5.7" height="15.0" fill="rgb(247,182,27)" rx="2" ry="2" />
+<text  x="575.18" y="223.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.12%)</title><rect x="99.9" y="341" width="1.4" height="15.0" fill="rgb(251,82,27)" rx="2" ry="2" />
+<text  x="102.89" y="351.5" ></text>
+</g>
+<g >
+<title>all (827 samples, 100%)</title><rect x="10.0" y="597" width="1180.0" height="15.0" fill="rgb(215,109,39)" rx="2" ry="2" />
+<text  x="13.00" y="607.5" ></text>
+</g>
+<g >
+<title>webrtc::webrtc_new_closure_impl::ClosureTask&lt;webrtc::voe::(anonymous namespace)::ChannelSend::ProcessAndEncodeAudio(std::__Cr::unique_ptr&lt;webrtc::AudioFrame, std::__Cr::default_delete&lt;webrtc::AudioFrame&gt; &gt;)::ProcessAndEncodeAudio&gt;::Run() (68 samples, 8.22%)</title><rect x="1004.5" y="357" width="97.0" height="15.0" fill="rgb(224,31,35)" rx="2" ry="2" />
+<text  x="1007.51" y="367.5" >webrtc::web..</text>
+</g>
+<g >
+<title>rtc::RefCountedObject&lt;(anonymous namespace)::FrameAdapter&lt;webrtc::I420BufferInterface&gt; &gt;::Release() const (2 samples, 0.24%)</title><rect x="734.8" y="309" width="2.9" height="15.0" fill="rgb(216,132,19)" rx="2" ry="2" />
+<text  x="737.84" y="319.5" ></text>
+</g>
+<g >
+<title>vpx_variance16x16_avx2 (5 samples, 0.60%)</title><rect x="264.0" y="165" width="7.1" height="15.0" fill="rgb(253,75,41)" rx="2" ry="2" />
+<text  x="266.98" y="175.5" ></text>
+</g>
+<g >
+<title>__psynch_mutexwait (3 samples, 0.36%)</title><rect x="1115.8" y="389" width="4.3" height="15.0" fill="rgb(205,165,36)" rx="2" ry="2" />
+<text  x="1118.80" y="399.5" ></text>
+</g>
+<g >
+<title>ec_enc_icdf (1 samples, 0.12%)</title><rect x="1054.4" y="197" width="1.5" height="15.0" fill="rgb(218,150,19)" rx="2" ry="2" />
+<text  x="1057.45" y="207.5" ></text>
+</g>
+<g >
+<title>_platform_bzero$VARIANT$Haswell (2 samples, 0.24%)</title><rect x="702.0" y="213" width="2.9" height="15.0" fill="rgb(228,187,51)" rx="2" ry="2" />
+<text  x="705.02" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_loop_filter_row_normal (13 samples, 1.57%)</title><rect x="958.9" y="213" width="18.5" height="15.0" fill="rgb(221,149,10)" rx="2" ry="2" />
+<text  x="961.85" y="223.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacketHistory::CullOldPackets(long long) (1 samples, 0.12%)</title><rect x="1095.8" y="261" width="1.5" height="15.0" fill="rgb(236,139,50)" rx="2" ry="2" />
+<text  x="1098.83" y="271.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16x16_ssse3 (1 samples, 0.12%)</title><rect x="241.1" y="165" width="1.5" height="15.0" fill="rgb(218,218,24)" rx="2" ry="2" />
+<text  x="244.15" y="175.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::AssertNoLockHeldOnCurrentThread() (1 samples, 0.12%)</title><rect x="1122.9" y="437" width="1.5" height="15.0" fill="rgb(242,144,13)" rx="2" ry="2" />
+<text  x="1125.94" y="447.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThreadStack::Push(base::internal::WorkerThread*) (1 samples, 0.12%)</title><rect x="1144.3" y="421" width="1.5" height="15.0" fill="rgb(242,97,42)" rx="2" ry="2" />
+<text  x="1147.34" y="431.5" ></text>
+</g>
+<g >
+<title>vpx_mse16x16_avx2 (1 samples, 0.12%)</title><rect x="592.2" y="213" width="1.4" height="15.0" fill="rgb(209,29,23)" rx="2" ry="2" />
+<text  x="595.15" y="223.5" ></text>
+</g>
+<g >
+<title>silk_burg_modified_FLP (6 samples, 0.73%)</title><rect x="1055.9" y="181" width="8.5" height="15.0" fill="rgb(231,93,23)" rx="2" ry="2" />
+<text  x="1058.88" y="191.5" ></text>
+</g>
+<g >
+<title>base::(anonymous namespace)::ThreadFunc(void*) (827 samples, 100.00%)</title><rect x="10.0" y="517" width="1180.0" height="15.0" fill="rgb(240,180,19)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >base::(anonymous namespace)::ThreadFunc(void*)</text>
+</g>
+<g >
+<title>objc_msgSend (2 samples, 0.24%)</title><rect x="1187.1" y="485" width="2.9" height="15.0" fill="rgb(229,150,12)" rx="2" ry="2" />
+<text  x="1190.15" y="495.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.12%)</title><rect x="99.9" y="325" width="1.4" height="15.0" fill="rgb(251,35,49)" rx="2" ry="2" />
+<text  x="102.89" y="335.5" ></text>
+</g>
+<g >
+<title>vp8e_encode (420 samples, 50.79%)</title><rect x="127.0" y="277" width="599.3" height="15.0" fill="rgb(253,55,7)" rx="2" ry="2" />
+<text  x="130.00" y="287.5" >vp8e_encode</text>
+</g>
+<g >
+<title>vp8_copy_mem16x16_sse2 (2 samples, 0.24%)</title><rect x="787.6" y="197" width="2.9" height="15.0" fill="rgb(226,94,34)" rx="2" ry="2" />
+<text  x="790.63" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (1 samples, 0.12%)</title><rect x="1144.3" y="389" width="1.5" height="15.0" fill="rgb(238,63,45)" rx="2" ry="2" />
+<text  x="1147.34" y="399.5" ></text>
+</g>
+<g >
+<title>extend_plane (5 samples, 0.60%)</title><rect x="706.3" y="229" width="7.1" height="15.0" fill="rgb(224,49,15)" rx="2" ry="2" />
+<text  x="709.30" y="239.5" ></text>
+</g>
+<g >
+<title>rtc::TaskQueue::PostTask(std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;) (1 samples, 0.12%)</title><rect x="729.1" y="245" width="1.5" height="15.0" fill="rgb(247,44,10)" rx="2" ry="2" />
+<text  x="732.13" y="255.5" ></text>
+</g>
+<g >
+<title>vp8_cost_mv_ref (7 samples, 0.85%)</title><rect x="282.5" y="181" width="10.0" height="15.0" fill="rgb(218,172,34)" rx="2" ry="2" />
+<text  x="285.53" y="191.5" ></text>
+</g>
+<g >
+<title>tiny_free_no_lock (1 samples, 0.12%)</title><rect x="112.7" y="341" width="1.5" height="15.0" fill="rgb(224,158,6)" rx="2" ry="2" />
+<text  x="115.73" y="351.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (2 samples, 0.24%)</title><rect x="102.7" y="341" width="2.9" height="15.0" fill="rgb(205,92,24)" rx="2" ry="2" />
+<text  x="105.74" y="351.5" ></text>
+</g>
+<g >
+<title>objc_removeAssociatedObjects (1 samples, 0.12%)</title><rect x="15.7" y="453" width="1.4" height="15.0" fill="rgb(209,113,33)" rx="2" ry="2" />
+<text  x="18.71" y="463.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (1 samples, 0.12%)</title><rect x="736.3" y="133" width="1.4" height="15.0" fill="rgb(212,67,41)" rx="2" ry="2" />
+<text  x="739.26" y="143.5" ></text>
+</g>
+<g >
+<title>vp8_decode_mode_mvs (12 samples, 1.45%)</title><rect x="930.3" y="213" width="17.1" height="15.0" fill="rgb(221,27,23)" rx="2" ry="2" />
+<text  x="933.31" y="223.5" ></text>
+</g>
+<g >
+<title>webrtc::AlrDetector::OnBytesSent(unsigned long, long long) (1 samples, 0.12%)</title><rect x="119.9" y="325" width="1.4" height="15.0" fill="rgb(239,90,29)" rx="2" ry="2" />
+<text  x="122.87" y="335.5" ></text>
+</g>
+<g >
+<title>media::VideoFrame::~VideoFrame() (2 samples, 0.24%)</title><rect x="734.8" y="277" width="2.9" height="15.0" fill="rgb(216,223,6)" rx="2" ry="2" />
+<text  x="737.84" y="287.5" ></text>
+</g>
+<g >
+<title>webrtc::internal::VideoReceiveStream::StartNextDecode() (1 samples, 0.12%)</title><rect x="1001.7" y="341" width="1.4" height="15.0" fill="rgb(238,196,20)" rx="2" ry="2" />
+<text  x="1004.66" y="351.5" ></text>
+</g>
+<g >
+<title>base::internal::Sequence::TakeTask() (2 samples, 0.24%)</title><rect x="47.1" y="437" width="2.9" height="15.0" fill="rgb(231,126,54)" rx="2" ry="2" />
+<text  x="50.10" y="447.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_other_y_half_loop (2 samples, 0.24%)</title><rect x="391.0" y="165" width="2.8" height="15.0" fill="rgb(208,0,21)" rx="2" ry="2" />
+<text  x="393.97" y="175.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::WorkerThreadDelegateImpl::DidProcessTask(base::internal::RegisteredTaskSource) (7 samples, 0.85%)</title><rect x="1114.4" y="469" width="10.0" height="15.0" fill="rgb(224,222,33)" rx="2" ry="2" />
+<text  x="1117.38" y="479.5" ></text>
+</g>
+<g >
+<title>webrtc::vcm::VideoReceiver::Decode(webrtc::VCMEncodedFrame const&amp;) (183 samples, 22.13%)</title><rect x="739.1" y="325" width="261.1" height="15.0" fill="rgb(254,28,28)" rx="2" ry="2" />
+<text  x="742.12" y="335.5" >webrtc::vcm::VideoReceiver::Decode..</text>
+</g>
+<g >
+<title>quant_band (1 samples, 0.12%)</title><rect x="1013.1" y="213" width="1.4" height="15.0" fill="rgb(223,190,44)" rx="2" ry="2" />
+<text  x="1016.07" y="223.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (4 samples, 0.48%)</title><rect x="62.8" y="389" width="5.7" height="15.0" fill="rgb(254,47,46)" rx="2" ry="2" />
+<text  x="65.79" y="399.5" ></text>
+</g>
+<g >
+<title>vpx_subtract_block_sse2.loop_16 (4 samples, 0.48%)</title><rect x="547.9" y="197" width="5.7" height="15.0" fill="rgb(240,42,9)" rx="2" ry="2" />
+<text  x="550.92" y="207.5" ></text>
+</g>
+<g >
+<title>base::debug::StackTrace::StackTrace() (1 samples, 0.12%)</title><rect x="94.2" y="405" width="1.4" height="15.0" fill="rgb(209,166,41)" rx="2" ry="2" />
+<text  x="97.18" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_idct_dequant_0_2x_sse2 (1 samples, 0.12%)</title><rect x="948.9" y="197" width="1.4" height="15.0" fill="rgb(221,206,30)" rx="2" ry="2" />
+<text  x="951.86" y="207.5" ></text>
+</g>
+<g >
+<title>silk_noise_shape_quantizer_del_dec (19 samples, 2.30%)</title><rect x="1027.3" y="181" width="27.1" height="15.0" fill="rgb(241,56,47)" rx="2" ry="2" />
+<text  x="1030.34" y="191.5" >s..</text>
+</g>
+<g >
+<title>vp8_encode_inter16x16 (34 samples, 4.11%)</title><rect x="162.7" y="197" width="48.5" height="15.0" fill="rgb(245,2,13)" rx="2" ry="2" />
+<text  x="165.67" y="207.5" >vp8_..</text>
+</g>
+<g >
+<title>vp8_tokenize_mb (25 samples, 3.02%)</title><rect x="512.2" y="197" width="35.7" height="15.0" fill="rgb(252,173,26)" rx="2" ry="2" />
+<text  x="515.25" y="207.5" >vp8..</text>
+</g>
+<g >
+<title>vp8_loop_filter_mbv_sse2 (1 samples, 0.12%)</title><rect x="590.7" y="197" width="1.5" height="15.0" fill="rgb(240,175,20)" rx="2" ry="2" />
+<text  x="593.73" y="207.5" ></text>
+</g>
+<g >
+<title>base::ConditionVariable::Broadcast() (1 samples, 0.12%)</title><rect x="1140.1" y="421" width="1.4" height="15.0" fill="rgb(207,48,43)" rx="2" ry="2" />
+<text  x="1143.06" y="431.5" ></text>
+</g>
+<g >
+<title>vpx_post_proc_down_and_across_mb_row_sse2.nextcol (14 samples, 1.69%)</title><rect x="756.2" y="213" width="20.0" height="15.0" fill="rgb(227,145,5)" rx="2" ry="2" />
+<text  x="759.24" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Release() (1 samples, 0.12%)</title><rect x="1101.5" y="277" width="1.5" height="15.0" fill="rgb(211,96,38)" rx="2" ry="2" />
+<text  x="1104.54" y="287.5" ></text>
+</g>
+<g >
+<title>mach_absolute_time (1 samples, 0.12%)</title><rect x="1150.0" y="405" width="1.5" height="15.0" fill="rgb(222,135,46)" rx="2" ry="2" />
+<text  x="1153.05" y="415.5" ></text>
+</g>
+<g >
+<title>base::internal::CallbackBase::~CallbackBase() (1 samples, 0.12%)</title><rect x="48.5" y="405" width="1.5" height="15.0" fill="rgb(211,20,39)" rx="2" ry="2" />
+<text  x="51.52" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_quantize_mb (16 samples, 1.93%)</title><rect x="181.2" y="181" width="22.9" height="15.0" fill="rgb(231,28,5)" rx="2" ry="2" />
+<text  x="184.22" y="191.5" >v..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_0::__invoke(_malloc_zone_t*, void const*) (1 samples, 0.12%)</title><rect x="109.9" y="341" width="1.4" height="15.0" fill="rgb(218,134,13)" rx="2" ry="2" />
+<text  x="112.88" y="351.5" ></text>
+</g>
+<g >
+<title>vp8_denoiser_filter_uv_sse2 (5 samples, 0.60%)</title><rect x="338.2" y="165" width="7.1" height="15.0" fill="rgb(239,39,33)" rx="2" ry="2" />
+<text  x="341.17" y="175.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.12%)</title><rect x="124.1" y="293" width="1.5" height="15.0" fill="rgb(237,1,29)" rx="2" ry="2" />
+<text  x="127.15" y="303.5" ></text>
+</g>
+<g >
+<title>silk_encode_frame_FLP (45 samples, 5.44%)</title><rect x="1025.9" y="229" width="64.2" height="15.0" fill="rgb(244,61,4)" rx="2" ry="2" />
+<text  x="1028.91" y="239.5" >silk_en..</text>
+</g>
+<g >
+<title>backtrace (1 samples, 0.12%)</title><rect x="59.9" y="373" width="1.5" height="15.0" fill="rgb(233,44,16)" rx="2" ry="2" />
+<text  x="62.94" y="383.5" ></text>
+</g>
+<g >
+<title>vp8_yv12_copy_frame_c (12 samples, 1.45%)</title><rect x="689.2" y="245" width="17.1" height="15.0" fill="rgb(240,24,1)" rx="2" ry="2" />
+<text  x="692.18" y="255.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3 (1 samples, 0.12%)</title><rect x="363.9" y="165" width="1.4" height="15.0" fill="rgb(207,163,42)" rx="2" ry="2" />
+<text  x="366.86" y="175.5" ></text>
+</g>
+<g >
+<title>base::internal::DecoratorWithTaskSource&lt;base::internal::TaskSource::RunIntent, base::internal::RegisteredTaskSource&gt;::DecoratorWithTaskSource(base::internal::RegisteredTaskSource, base::internal::TaskSource::RunIntent) (1 samples, 0.12%)</title><rect x="1132.9" y="453" width="1.5" height="15.0" fill="rgb(223,36,22)" rx="2" ry="2" />
+<text  x="1135.93" y="463.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.12%)</title><rect x="1131.5" y="437" width="1.4" height="15.0" fill="rgb(212,192,13)" rx="2" ry="2" />
+<text  x="1134.50" y="447.5" ></text>
+</g>
+<g >
+<title>vp8_set_speed_features (1 samples, 0.12%)</title><rect x="562.2" y="213" width="1.4" height="15.0" fill="rgb(232,162,16)" rx="2" ry="2" />
+<text  x="565.19" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::PriorityQueue::PopTaskSource() (2 samples, 0.24%)</title><rect x="1134.4" y="453" width="2.8" height="15.0" fill="rgb(247,20,0)" rx="2" ry="2" />
+<text  x="1137.35" y="463.5" ></text>
+</g>
+<g >
+<title>pthread_getspecific (1 samples, 0.12%)</title><rect x="55.7" y="405" width="1.4" height="15.0" fill="rgb(221,206,18)" rx="2" ry="2" />
+<text  x="58.66" y="415.5" ></text>
+</g>
+<g >
+<title>evaluate_inter_mode (16 samples, 1.93%)</title><rect x="248.3" y="181" width="22.8" height="15.0" fill="rgb(214,149,53)" rx="2" ry="2" />
+<text  x="251.28" y="191.5" >e..</text>
+</g>
+<g >
+<title>vp8_initialize_rd_consts (1 samples, 0.12%)</title><rect x="562.2" y="229" width="1.4" height="15.0" fill="rgb(241,179,15)" rx="2" ry="2" />
+<text  x="565.19" y="239.5" ></text>
+</g>
+<g >
+<title>rtc::RefCountedObject&lt;rtc::BufferT&lt;unsigned char, false&gt; &gt;::Release() const (1 samples, 0.12%)</title><rect x="1095.8" y="229" width="1.5" height="15.0" fill="rgb(243,203,43)" rx="2" ry="2" />
+<text  x="1098.83" y="239.5" ></text>
+</g>
+<g >
+<title>read_mvcomponent (2 samples, 0.24%)</title><rect x="944.6" y="197" width="2.8" height="15.0" fill="rgb(243,133,19)" rx="2" ry="2" />
+<text  x="947.58" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskTracker::BeforeRunTask(base::TaskShutdownBehavior) (1 samples, 0.12%)</title><rect x="50.0" y="453" width="1.4" height="15.0" fill="rgb(227,157,8)" rx="2" ry="2" />
+<text  x="52.95" y="463.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::TimedWaitUntil(base::TimeTicks const&amp;) (24 samples, 2.90%)</title><rect x="1150.0" y="437" width="34.3" height="15.0" fill="rgb(219,67,41)" rx="2" ry="2" />
+<text  x="1153.05" y="447.5" >ba..</text>
+</g>
+<g >
+<title>silk_find_pred_coefs_FLP (10 samples, 1.21%)</title><rect x="1055.9" y="213" width="14.2" height="15.0" fill="rgb(243,0,8)" rx="2" ry="2" />
+<text  x="1058.88" y="223.5" ></text>
+</g>
+<g >
+<title>webrtc::internal::VideoReceiveStream::HandleEncodedFrame(std::__Cr::unique_ptr&lt;webrtc::video_coding::EncodedFrame, std::__Cr::default_delete&lt;webrtc::video_coding::EncodedFrame&gt; &gt;) (185 samples, 22.37%)</title><rect x="737.7" y="341" width="264.0" height="15.0" fill="rgb(214,122,5)" rx="2" ry="2" />
+<text  x="740.69" y="351.5" >webrtc::internal::VideoReceiveStrea..</text>
+</g>
+<g >
+<title>_CFAutoreleasePoolPop (1 samples, 0.12%)</title><rect x="14.3" y="453" width="1.4" height="15.0" fill="rgb(227,88,21)" rx="2" ry="2" />
+<text  x="17.28" y="463.5" ></text>
+</g>
+<g >
+<title>vp8_loop_filter_frame (17 samples, 2.06%)</title><rect x="566.5" y="229" width="24.2" height="15.0" fill="rgb(220,179,8)" rx="2" ry="2" />
+<text  x="569.47" y="239.5" >v..</text>
+</g>
+<g >
+<title>base::internal::PooledSequencedTaskRunner::RunsTasksInCurrentSequence() const (1 samples, 0.12%)</title><rect x="58.5" y="405" width="1.4" height="15.0" fill="rgb(253,166,34)" rx="2" ry="2" />
+<text  x="61.51" y="415.5" ></text>
+</g>
+<g >
+<title>free (1 samples, 0.12%)</title><rect x="109.9" y="357" width="1.4" height="15.0" fill="rgb(250,221,50)" rx="2" ry="2" />
+<text  x="112.88" y="367.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d16_h6_ssse3.filter_block1d16_h6_rowloop_ssse3 (8 samples, 0.97%)</title><rect x="794.8" y="181" width="11.4" height="15.0" fill="rgb(220,206,28)" rx="2" ry="2" />
+<text  x="797.76" y="191.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16x16_ssse3 (1 samples, 0.12%)</title><rect x="362.4" y="165" width="1.5" height="15.0" fill="rgb(245,146,39)" rx="2" ry="2" />
+<text  x="365.43" y="175.5" ></text>
+</g>
+<g >
+<title>vp8_loop_filter_mbv_sse2 (3 samples, 0.36%)</title><rect x="964.6" y="197" width="4.2" height="15.0" fill="rgb(231,157,9)" rx="2" ry="2" />
+<text  x="967.56" y="207.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (3 samples, 0.36%)</title><rect x="69.9" y="325" width="4.3" height="15.0" fill="rgb(245,95,9)" rx="2" ry="2" />
+<text  x="72.93" y="335.5" ></text>
+</g>
+<g >
+<title>silk_encode_pulses (1 samples, 0.12%)</title><rect x="1054.4" y="213" width="1.5" height="15.0" fill="rgb(254,89,25)" rx="2" ry="2" />
+<text  x="1057.45" y="223.5" ></text>
+</g>
+<g >
+<title>void base::internal::OptionalStorageBase&lt;base::SequencedTaskRunnerHandle, false&gt;::Init&lt;base::SequencedTaskRunner*&gt;(base::SequencedTaskRunner*&amp;&amp;) (3 samples, 0.36%)</title><rect x="1110.1" y="421" width="4.3" height="15.0" fill="rgb(228,148,52)" rx="2" ry="2" />
+<text  x="1113.10" y="431.5" ></text>
+</g>
+<g >
+<title>webrtc::(anonymous namespace)::ResourceOwningTask&lt;webrtc::RtcEvent&gt;::~ResourceOwningTask() (1 samples, 0.12%)</title><rect x="118.4" y="357" width="1.5" height="15.0" fill="rgb(230,31,39)" rx="2" ry="2" />
+<text  x="121.44" y="367.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacketHistory::PutRtpPacket(std::__Cr::unique_ptr&lt;webrtc::RtpPacketToSend, std::__Cr::default_delete&lt;webrtc::RtpPacketToSend&gt; &gt;, webrtc::StorageType, absl::optional&lt;long long&gt;) (2 samples, 0.24%)</title><rect x="1094.4" y="277" width="2.9" height="15.0" fill="rgb(246,107,46)" rx="2" ry="2" />
+<text  x="1097.40" y="287.5" ></text>
+</g>
+<g >
+<title>small_malloc_should_clear (2 samples, 0.24%)</title><rect x="71.4" y="309" width="2.8" height="15.0" fill="rgb(232,180,46)" rx="2" ry="2" />
+<text  x="74.35" y="319.5" ></text>
+</g>
+<g >
+<title>vp8_copy32xn_sse3.block_copy_sse3_loopx4 (1 samples, 0.12%)</title><rect x="281.1" y="181" width="1.4" height="15.0" fill="rgb(242,162,42)" rx="2" ry="2" />
+<text  x="284.10" y="191.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (4 samples, 0.48%)</title><rect x="62.8" y="325" width="5.7" height="15.0" fill="rgb(241,197,6)" rx="2" ry="2" />
+<text  x="65.79" y="335.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (3 samples, 0.36%)</title><rect x="1115.8" y="437" width="4.3" height="15.0" fill="rgb(230,128,3)" rx="2" ry="2" />
+<text  x="1118.80" y="447.5" ></text>
+</g>
+<g >
+<title>vp8_loop_filter_vertical_edge_uv_sse2 (2 samples, 0.24%)</title><rect x="577.9" y="213" width="2.8" height="15.0" fill="rgb(210,90,47)" rx="2" ry="2" />
+<text  x="580.88" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Release() (1 samples, 0.12%)</title><rect x="38.5" y="453" width="1.5" height="15.0" fill="rgb(212,212,50)" rx="2" ry="2" />
+<text  x="41.54" y="463.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::RunWorker() (825 samples, 99.76%)</title><rect x="10.0" y="485" width="1177.1" height="15.0" fill="rgb(215,200,13)" rx="2" ry="2" />
+<text  x="13.00" y="495.5" >base::internal::WorkerThread::RunWorker()</text>
+</g>
+<g >
+<title>base::HistogramSamples::IncreaseSumAndCount(long long, int) (1 samples, 0.12%)</title><rect x="1141.5" y="389" width="1.4" height="15.0" fill="rgb(248,75,38)" rx="2" ry="2" />
+<text  x="1144.49" y="399.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance8xh_ssse3.x_other_y_other_loop (1 samples, 0.12%)</title><rect x="251.1" y="149" width="1.5" height="15.0" fill="rgb(242,100,15)" rx="2" ry="2" />
+<text  x="254.14" y="159.5" ></text>
+</g>
+<g >
+<title>free_small (1 samples, 0.12%)</title><rect x="737.7" y="293" width="1.4" height="15.0" fill="rgb(239,14,53)" rx="2" ry="2" />
+<text  x="740.69" y="303.5" ></text>
+</g>
+<g >
+<title>cost (1 samples, 0.12%)</title><rect x="560.8" y="149" width="1.4" height="15.0" fill="rgb(243,229,41)" rx="2" ry="2" />
+<text  x="563.76" y="159.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (4 samples, 0.48%)</title><rect x="62.8" y="357" width="5.7" height="15.0" fill="rgb(235,192,11)" rx="2" ry="2" />
+<text  x="65.79" y="367.5" ></text>
+</g>
+<g >
+<title>(anonymous namespace)::WebrtcTaskQueue::PostDelayedTask(std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;, unsigned int) (1 samples, 0.12%)</title><rect x="1101.5" y="341" width="1.5" height="15.0" fill="rgb(208,105,27)" rx="2" ry="2" />
+<text  x="1104.54" y="351.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (4 samples, 0.48%)</title><rect x="62.8" y="341" width="5.7" height="15.0" fill="rgb(248,191,16)" rx="2" ry="2" />
+<text  x="65.79" y="351.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_half_y_nonhalf (1 samples, 0.12%)</title><rect x="368.1" y="165" width="1.5" height="15.0" fill="rgb(208,186,6)" rx="2" ry="2" />
+<text  x="371.14" y="175.5" ></text>
+</g>
+<g >
+<title>webrtc::FrameEncodeMetadataWriter::OnEncodeStarted(webrtc::VideoFrame const&amp;) (2 samples, 0.24%)</title><rect x="122.7" y="309" width="2.9" height="15.0" fill="rgb(227,177,12)" rx="2" ry="2" />
+<text  x="125.72" y="319.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_h4_ssse3.filter_block1d8_h4_rowloop_ssse3 (1 samples, 0.12%)</title><rect x="811.9" y="181" width="1.4" height="15.0" fill="rgb(242,16,46)" rx="2" ry="2" />
+<text  x="814.89" y="191.5" ></text>
+</g>
+<g >
+<title>std::__Cr::__tree&lt;std::__Cr::__value_type&lt;webrtc::video_coding::VideoLayerFrameId, webrtc::video_coding::FrameBuffer::FrameInfo&gt;, std::__Cr::__map_value_compare&lt;webrtc::video_coding::VideoLayerFrameId, std::__Cr::__value_type&lt;webrtc::video_coding::VideoLayerFrameId, webrtc::video_coding::FrameBuffer::FrameInfo&gt;, std::__Cr::less&lt;webrtc::video_coding::VideoLayerFrameId&gt;, true&gt;, std::__Cr::allocator&lt;std::__Cr::__value_type&lt;webrtc::video_coding::VideoLayerFrameId, webrtc::video_coding::FrameBuffer::FrameInfo&gt; &gt; &gt;::erase(std::__Cr::__tree_const_iterator&lt;std::__Cr::__value_type&lt;webrtc::video_coding::VideoLayerFrameId, webrtc::video_coding::FrameBuffer::FrameInfo&gt;, std::__Cr::__tree_node&lt;std::__Cr::__value_type&lt;webrtc::video_coding::VideoLayerFrameId, webrtc::video_coding::FrameBuffer::FrameInfo&gt;, void*&gt;*, long&gt;) (1 samples, 0.12%)</title><rect x="1104.4" y="309" width="1.4" height="15.0" fill="rgb(221,105,32)" rx="2" ry="2" />
+<text  x="1107.39" y="319.5" ></text>
+</g>
+<g >
+<title>small_free_list_add_ptr (1 samples, 0.12%)</title><rect x="72.8" y="293" width="1.4" height="15.0" fill="rgb(229,99,14)" rx="2" ry="2" />
+<text  x="75.78" y="303.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (4 samples, 0.48%)</title><rect x="68.5" y="373" width="5.7" height="15.0" fill="rgb(208,78,24)" rx="2" ry="2" />
+<text  x="71.50" y="383.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskSource::BeginTransaction() (3 samples, 0.36%)</title><rect x="42.8" y="453" width="4.3" height="15.0" fill="rgb(210,148,7)" rx="2" ry="2" />
+<text  x="45.82" y="463.5" ></text>
+</g>
+<g >
+<title>webrtc::IntervalBudget::budget_ratio() const (1 samples, 0.12%)</title><rect x="119.9" y="309" width="1.4" height="15.0" fill="rgb(236,205,37)" rx="2" ry="2" />
+<text  x="122.87" y="319.5" ></text>
+</g>
+<g >
+<title>vp8_sixtap_predict16x16_ssse3 (2 samples, 0.24%)</title><rect x="309.6" y="149" width="2.9" height="15.0" fill="rgb(209,7,2)" rx="2" ry="2" />
+<text  x="312.64" y="159.5" ></text>
+</g>
+<g >
+<title>cyclic_background_refresh (1 samples, 0.12%)</title><rect x="129.9" y="245" width="1.4" height="15.0" fill="rgb(250,7,32)" rx="2" ry="2" />
+<text  x="132.85" y="255.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (5 samples, 0.60%)</title><rect x="85.6" y="341" width="7.2" height="15.0" fill="rgb(240,61,43)" rx="2" ry="2" />
+<text  x="88.62" y="351.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::RunPooledWorker() (827 samples, 100.00%)</title><rect x="10.0" y="501" width="1180.0" height="15.0" fill="rgb(211,201,39)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" >base::internal::WorkerThread::RunPooledWorker()</text>
+</g>
+<g >
+<title>vp8_decode_mb_tokens (77 samples, 9.31%)</title><rect x="820.4" y="213" width="109.9" height="15.0" fill="rgb(238,14,7)" rx="2" ry="2" />
+<text  x="823.45" y="223.5" >vp8_decode_mb..</text>
+</g>
+<g >
+<title>void media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (double)&gt; &gt;::Run&lt;double&gt;(double) (1 samples, 0.12%)</title><rect x="736.3" y="165" width="1.4" height="15.0" fill="rgb(237,214,33)" rx="2" ry="2" />
+<text  x="739.26" y="175.5" ></text>
+</g>
+<g >
+<title>vp8_yv12_extend_frame_borders_c (5 samples, 0.60%)</title><rect x="706.3" y="245" width="7.1" height="15.0" fill="rgb(211,67,44)" rx="2" ry="2" />
+<text  x="709.30" y="255.5" ></text>
+</g>
+<g >
+<title>transient_analysis (2 samples, 0.24%)</title><rect x="1014.5" y="229" width="2.9" height="15.0" fill="rgb(243,87,46)" rx="2" ry="2" />
+<text  x="1017.50" y="239.5" ></text>
+</g>
+<g >
+<title>vp8dx_get_raw_frame (25 samples, 3.02%)</title><rect x="740.5" y="261" width="35.7" height="15.0" fill="rgb(217,30,38)" rx="2" ry="2" />
+<text  x="743.54" y="271.5" >vp8..</text>
+</g>
+<g >
+<title>base::internal::TaskTracker::IsShutdownComplete() const (3 samples, 0.36%)</title><rect x="34.3" y="469" width="4.2" height="15.0" fill="rgb(247,114,18)" rx="2" ry="2" />
+<text  x="37.26" y="479.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_half_y_half_loop (2 samples, 0.24%)</title><rect x="365.3" y="165" width="2.8" height="15.0" fill="rgb(237,55,35)" rx="2" ry="2" />
+<text  x="368.28" y="175.5" ></text>
+</g>
+<g >
+<title>rtc::RateTracker::ComputeRateForInterval(long long) const (1 samples, 0.12%)</title><rect x="727.7" y="245" width="1.4" height="15.0" fill="rgb(210,98,41)" rx="2" ry="2" />
+<text  x="730.70" y="255.5" ></text>
+</g>
+<g >
+<title>base::debug::StackTrace::StackTrace() (1 samples, 0.12%)</title><rect x="59.9" y="405" width="1.5" height="15.0" fill="rgb(208,109,40)" rx="2" ry="2" />
+<text  x="62.94" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_build_component_cost_table (1 samples, 0.12%)</title><rect x="682.0" y="213" width="1.5" height="15.0" fill="rgb(221,129,45)" rx="2" ry="2" />
+<text  x="685.04" y="223.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioEncoderOpusImpl::EncodeImpl(unsigned int, rtc::ArrayView&lt;short const, -4711l&gt;, rtc::BufferT&lt;unsigned char, false&gt;*) (62 samples, 7.50%)</title><rect x="1005.9" y="309" width="88.5" height="15.0" fill="rgb(250,191,1)" rx="2" ry="2" />
+<text  x="1008.94" y="319.5" >webrtc::Au..</text>
+</g>
+<g >
+<title>vp8_copy_mem16x16_sse2 (2 samples, 0.24%)</title><rect x="168.4" y="165" width="2.8" height="15.0" fill="rgb(226,216,24)" rx="2" ry="2" />
+<text  x="171.38" y="175.5" ></text>
+</g>
+<g >
+<title>tiny_size (1 samples, 0.12%)</title><rect x="97.0" y="373" width="1.5" height="15.0" fill="rgb(208,67,37)" rx="2" ry="2" />
+<text  x="100.04" y="383.5" ></text>
+</g>
+<g >
+<title>vp8_mbloop_filter_horizontal_edge_sse2 (2 samples, 0.24%)</title><rect x="961.7" y="181" width="2.9" height="15.0" fill="rgb(211,33,37)" rx="2" ry="2" />
+<text  x="964.70" y="191.5" ></text>
+</g>
+<g >
+<title>vp8_cal_sad (6 samples, 0.73%)</title><rect x="272.5" y="181" width="8.6" height="15.0" fill="rgb(236,2,47)" rx="2" ry="2" />
+<text  x="275.54" y="191.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 0.12%)</title><rect x="1142.9" y="405" width="1.4" height="15.0" fill="rgb(206,142,42)" rx="2" ry="2" />
+<text  x="1145.91" y="415.5" ></text>
+</g>
+<g >
+<title>void base::internal::ThreadGroupImpl::ScopedWorkersExecutor::WorkerContainer::ForEachWorker&lt;base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)&gt;(base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)) (1 samples, 0.12%)</title><rect x="729.1" y="117" width="1.5" height="15.0" fill="rgb(210,38,54)" rx="2" ry="2" />
+<text  x="732.13" y="127.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (2 samples, 0.24%)</title><rect x="102.7" y="325" width="2.9" height="15.0" fill="rgb(215,218,31)" rx="2" ry="2" />
+<text  x="105.74" y="335.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequence(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (1 samples, 0.12%)</title><rect x="1101.5" y="309" width="1.5" height="15.0" fill="rgb(226,60,53)" rx="2" ry="2" />
+<text  x="1104.54" y="319.5" ></text>
+</g>
+<g >
+<title>tiny_free_no_lock (1 samples, 0.12%)</title><rect x="1108.7" y="373" width="1.4" height="15.0" fill="rgb(214,225,5)" rx="2" ry="2" />
+<text  x="1111.67" y="383.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.12%)</title><rect x="1124.4" y="453" width="1.4" height="15.0" fill="rgb(237,172,33)" rx="2" ry="2" />
+<text  x="1127.37" y="463.5" ></text>
+</g>
+<g >
+<title>vp8_build_intra_predictors_mby_s (1 samples, 0.12%)</title><rect x="814.7" y="213" width="1.5" height="15.0" fill="rgb(224,184,4)" rx="2" ry="2" />
+<text  x="817.74" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_sixtap_predict16x16_ssse3 (12 samples, 1.45%)</title><rect x="794.8" y="197" width="17.1" height="15.0" fill="rgb(232,113,1)" rx="2" ry="2" />
+<text  x="797.76" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::video_coding::PacketBuffer::ClearTo(unsigned short) (1 samples, 0.12%)</title><rect x="737.7" y="309" width="1.4" height="15.0" fill="rgb(225,7,35)" rx="2" ry="2" />
+<text  x="740.69" y="319.5" ></text>
+</g>
+<g >
+<title>vp8_pack_bitstream (67 samples, 8.10%)</title><rect x="593.6" y="245" width="95.6" height="15.0" fill="rgb(221,58,39)" rx="2" ry="2" />
+<text  x="596.58" y="255.5" >vp8_pack_bi..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 0.12%)</title><rect x="1142.9" y="421" width="1.4" height="15.0" fill="rgb(207,213,42)" rx="2" ry="2" />
+<text  x="1145.91" y="431.5" ></text>
+</g>
+<g >
+<title>vp8_hex_search (14 samples, 1.69%)</title><rect x="426.6" y="181" width="20.0" height="15.0" fill="rgb(237,158,45)" rx="2" ry="2" />
+<text  x="429.64" y="191.5" ></text>
+</g>
+<g >
+<title>blink::MediaStreamRemoteVideoSource::RemoteVideoSourceDelegate::OnFrame(webrtc::VideoFrame const&amp;) (1 samples, 0.12%)</title><rect x="997.4" y="181" width="1.4" height="15.0" fill="rgb(242,90,34)" rx="2" ry="2" />
+<text  x="1000.38" y="191.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Set(void*) (1 samples, 0.12%)</title><rect x="92.8" y="405" width="1.4" height="15.0" fill="rgb(244,120,53)" rx="2" ry="2" />
+<text  x="95.76" y="415.5" ></text>
+</g>
+<g >
+<title>opus_encode (62 samples, 7.50%)</title><rect x="1005.9" y="277" width="88.5" height="15.0" fill="rgb(227,176,47)" rx="2" ry="2" />
+<text  x="1008.94" y="287.5" >opus_encode</text>
+</g>
+<g >
+<title>vp8_loop_filter_mbh_sse2 (3 samples, 0.36%)</title><rect x="960.3" y="197" width="4.3" height="15.0" fill="rgb(221,180,48)" rx="2" ry="2" />
+<text  x="963.28" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_mbloop_filter_horizontal_edge_uv_sse2 (1 samples, 0.12%)</title><rect x="580.7" y="213" width="1.5" height="15.0" fill="rgb(222,63,23)" rx="2" ry="2" />
+<text  x="583.74" y="223.5" ></text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::Release() const (1 samples, 0.12%)</title><rect x="51.4" y="421" width="1.4" height="15.0" fill="rgb(227,7,7)" rx="2" ry="2" />
+<text  x="54.38" y="431.5" ></text>
+</g>
+<g >
+<title>vp8_encode_intra16x16mby (1 samples, 0.12%)</title><rect x="211.2" y="197" width="1.4" height="15.0" fill="rgb(237,150,50)" rx="2" ry="2" />
+<text  x="214.19" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::OveruseFrameDetector::FrameCaptured(webrtc::VideoFrame const&amp;, long long) (1 samples, 0.12%)</title><rect x="732.0" y="309" width="1.4" height="15.0" fill="rgb(208,14,5)" rx="2" ry="2" />
+<text  x="734.98" y="319.5" ></text>
+</g>
+<g >
+<title>vp8_find_best_sub_pixel_step (50 samples, 6.05%)</title><rect x="346.7" y="181" width="71.4" height="15.0" fill="rgb(249,209,16)" rx="2" ry="2" />
+<text  x="349.74" y="191.5" >vp8_find..</text>
+</g>
+<g >
+<title>_thread_stack_pcs (1 samples, 0.12%)</title><rect x="94.2" y="357" width="1.4" height="15.0" fill="rgb(227,135,6)" rx="2" ry="2" />
+<text  x="97.18" y="367.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 0.12%)</title><rect x="41.4" y="373" width="1.4" height="15.0" fill="rgb(242,157,29)" rx="2" ry="2" />
+<text  x="44.39" y="383.5" ></text>
+</g>
+<g >
+<title>vp8_copy_mem8x8_mmx (4 samples, 0.48%)</title><rect x="319.6" y="165" width="5.7" height="15.0" fill="rgb(252,183,23)" rx="2" ry="2" />
+<text  x="322.63" y="175.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 0.12%)</title><rect x="997.4" y="53" width="1.4" height="15.0" fill="rgb(219,186,46)" rx="2" ry="2" />
+<text  x="1000.38" y="63.5" ></text>
+</g>
+<g >
+<title>webrtc::VCMGenericDecoder::Decode(webrtc::VCMEncodedFrame const&amp;, long long) (182 samples, 22.01%)</title><rect x="740.5" y="309" width="259.7" height="15.0" fill="rgb(213,151,26)" rx="2" ry="2" />
+<text  x="743.54" y="319.5" >webrtc::VCMGenericDecoder::Decode(..</text>
+</g>
+<g >
+<title>webrtc::VideoQualityObserver::OnRenderedFrame(webrtc::VideoFrame const&amp;, long long) (1 samples, 0.12%)</title><rect x="998.8" y="197" width="1.4" height="15.0" fill="rgb(249,122,24)" rx="2" ry="2" />
+<text  x="1001.80" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (2 samples, 0.24%)</title><rect x="1128.6" y="437" width="2.9" height="15.0" fill="rgb(228,60,12)" rx="2" ry="2" />
+<text  x="1131.65" y="447.5" ></text>
+</g>
+<g >
+<title>webrtc::webrtc_new_closure_impl::ClosureTask&lt;webrtc::RtpTransportControllerSend::OnSentPacket(rtc::SentPacket const&amp;)::$_5&gt;::Run() (2 samples, 0.24%)</title><rect x="119.9" y="357" width="2.8" height="15.0" fill="rgb(236,177,21)" rx="2" ry="2" />
+<text  x="122.87" y="367.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::WorkerThreadDelegateImpl::GetWork(base::internal::WorkerThread*) (17 samples, 2.06%)</title><rect x="1124.4" y="469" width="24.2" height="15.0" fill="rgb(226,27,21)" rx="2" ry="2" />
+<text  x="1127.37" y="479.5" >b..</text>
+</g>
+<g >
+<title>vp8_filter_block1d16_h6_ssse3.filter_block1d16_h6_rowloop_ssse3 (1 samples, 0.12%)</title><rect x="175.5" y="149" width="1.4" height="15.0" fill="rgb(218,103,16)" rx="2" ry="2" />
+<text  x="178.51" y="159.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Release() (1 samples, 0.12%)</title><rect x="1131.5" y="453" width="1.4" height="15.0" fill="rgb(207,92,18)" rx="2" ry="2" />
+<text  x="1134.50" y="463.5" ></text>
+</g>
+<g >
+<title>check_dot_artifact_candidate (1 samples, 0.12%)</title><rect x="149.8" y="181" width="1.5" height="15.0" fill="rgb(213,132,35)" rx="2" ry="2" />
+<text  x="152.83" y="191.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroup::ReEnqueueTaskSourceLockRequired(base::internal::ThreadGroup::BaseScopedWorkersExecutor*, base::internal::ThreadGroup::ScopedReenqueueExecutor*, base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (1 samples, 0.12%)</title><rect x="1121.5" y="453" width="1.4" height="15.0" fill="rgb(208,112,39)" rx="2" ry="2" />
+<text  x="1124.51" y="463.5" ></text>
+</g>
+<g >
+<title>GetCoeffs (68 samples, 8.22%)</title><rect x="833.3" y="197" width="97.0" height="15.0" fill="rgb(225,132,19)" rx="2" ry="2" />
+<text  x="836.29" y="207.5" >GetCoeffs</text>
+</g>
+<g >
+<title>webrtc::webrtc_new_closure_impl::ClosureTask&lt;webrtc::VideoStreamEncoder::OnFrame(webrtc::VideoFrame const&amp;)::$_9&gt;::Run() (429 samples, 51.87%)</title><rect x="122.7" y="357" width="612.1" height="15.0" fill="rgb(216,24,20)" rx="2" ry="2" />
+<text  x="125.72" y="367.5" >webrtc::webrtc_new_closure_impl::ClosureTask&lt;webrtc::VideoStreamEncoder::OnFrame(web..</text>
+</g>
+<g >
+<title>vp8_get_frame (25 samples, 3.02%)</title><rect x="740.5" y="277" width="35.7" height="15.0" fill="rgb(248,109,19)" rx="2" ry="2" />
+<text  x="743.54" y="287.5" >vp8..</text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 0.12%)</title><rect x="99.9" y="357" width="1.4" height="15.0" fill="rgb(247,210,13)" rx="2" ry="2" />
+<text  x="102.89" y="367.5" ></text>
+</g>
+<g >
+<title>_os_unfair_lock_lock_slow (2 samples, 0.24%)</title><rect x="1105.8" y="373" width="2.9" height="15.0" fill="rgb(225,59,45)" rx="2" ry="2" />
+<text  x="1108.82" y="383.5" ></text>
+</g>
+<g >
+<title>base::ThreadRestrictions::SetIOAllowed(bool) (10 samples, 1.21%)</title><rect x="59.9" y="421" width="14.3" height="15.0" fill="rgb(217,182,8)" rx="2" ry="2" />
+<text  x="62.94" y="431.5" ></text>
+</g>
+<g >
+<title>rtc::TimeMillis() (1 samples, 0.12%)</title><rect x="1103.0" y="309" width="1.4" height="15.0" fill="rgb(242,131,54)" rx="2" ry="2" />
+<text  x="1105.96" y="319.5" ></text>
+</g>
+<g >
+<title>vp8_copy_mem16x16_sse2 (3 samples, 0.36%)</title><rect x="135.6" y="213" width="4.2" height="15.0" fill="rgb(222,103,30)" rx="2" ry="2" />
+<text  x="138.56" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_copy_mem8x8_mmx (3 samples, 0.36%)</title><rect x="171.2" y="165" width="4.3" height="15.0" fill="rgb(247,106,1)" rx="2" ry="2" />
+<text  x="174.23" y="175.5" ></text>
+</g>
+<g >
+<title>small_malloc_should_clear (5 samples, 0.60%)</title><rect x="85.6" y="309" width="7.2" height="15.0" fill="rgb(248,134,17)" rx="2" ry="2" />
+<text  x="88.62" y="319.5" ></text>
+</g>
+<g >
+<title>rtc::VideoBroadcaster::OnFrame(webrtc::VideoFrame const&amp;) (2 samples, 0.24%)</title><rect x="995.9" y="197" width="2.9" height="15.0" fill="rgb(227,79,30)" rx="2" ry="2" />
+<text  x="998.95" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpVideoStreamReceiver::FrameDecoded(long long) (1 samples, 0.12%)</title><rect x="737.7" y="325" width="1.4" height="15.0" fill="rgb(239,159,28)" rx="2" ry="2" />
+<text  x="740.69" y="335.5" ></text>
+</g>
+<g >
+<title>base::debug::CollectStackTrace(void**, unsigned long) (1 samples, 0.12%)</title><rect x="59.9" y="389" width="1.5" height="15.0" fill="rgb(251,180,24)" rx="2" ry="2" />
+<text  x="62.94" y="399.5" ></text>
+</g>
+<g >
+<title>vp8_estimate_entropy_savings (1 samples, 0.12%)</title><rect x="565.0" y="245" width="1.5" height="15.0" fill="rgb(229,90,43)" rx="2" ry="2" />
+<text  x="568.04" y="255.5" ></text>
+</g>
+<g >
+<title>vp8_sixtap_predict8x8_ssse3 (2 samples, 0.24%)</title><rect x="178.4" y="165" width="2.8" height="15.0" fill="rgb(207,46,42)" rx="2" ry="2" />
+<text  x="181.37" y="175.5" ></text>
+</g>
+<g >
+<title>silk_NSQ_del_dec_c (19 samples, 2.30%)</title><rect x="1027.3" y="197" width="27.1" height="15.0" fill="rgb(251,134,23)" rx="2" ry="2" />
+<text  x="1030.34" y="207.5" >s..</text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_wake (1 samples, 0.12%)</title><rect x="38.5" y="405" width="1.5" height="15.0" fill="rgb(244,83,38)" rx="2" ry="2" />
+<text  x="41.54" y="415.5" ></text>
+</g>
+<g >
+<title>_pthread_start (827 samples, 100.00%)</title><rect x="10.0" y="549" width="1180.0" height="15.0" fill="rgb(248,167,11)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" >_pthread_start</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.12%)</title><rect x="167.0" y="181" width="1.4" height="15.0" fill="rgb(218,17,47)" rx="2" ry="2" />
+<text  x="169.95" y="191.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckUnheldAndMark() (1 samples, 0.12%)</title><rect x="1125.8" y="437" width="1.4" height="15.0" fill="rgb(225,156,30)" rx="2" ry="2" />
+<text  x="1128.79" y="447.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (*)(media::VideoFrameMetadata const*, base::OnceCallback&lt;void (double)&gt;), media::VideoFrameMetadata*, base::OnceCallback&lt;void (double)&gt; &gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (1 samples, 0.12%)</title><rect x="736.3" y="197" width="1.4" height="15.0" fill="rgb(239,139,48)" rx="2" ry="2" />
+<text  x="739.26" y="207.5" ></text>
+</g>
+<g >
+<title>silk_inner_product_FLP (3 samples, 0.36%)</title><rect x="1060.2" y="165" width="4.2" height="15.0" fill="rgb(236,213,25)" rx="2" ry="2" />
+<text  x="1063.16" y="175.5" ></text>
+</g>
+<g >
+<title>vp8_mbloop_filter_vertical_edge_sse2 (4 samples, 0.48%)</title><rect x="572.2" y="197" width="5.7" height="15.0" fill="rgb(244,4,16)" rx="2" ry="2" />
+<text  x="575.18" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskSource::Transaction::TakeTask(base::internal::TaskSource::RunIntent) (2 samples, 0.24%)</title><rect x="47.1" y="453" width="2.9" height="15.0" fill="rgb(214,162,33)" rx="2" ry="2" />
+<text  x="50.10" y="463.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_0::__invoke(_malloc_zone_t*, void const*) (1 samples, 0.12%)</title><rect x="1104.4" y="277" width="1.4" height="15.0" fill="rgb(216,31,50)" rx="2" ry="2" />
+<text  x="1107.39" y="287.5" ></text>
+</g>
+<g >
+<title>mach_absolute_time (1 samples, 0.12%)</title><rect x="1103.0" y="277" width="1.4" height="15.0" fill="rgb(211,189,50)" rx="2" ry="2" />
+<text  x="1105.96" y="287.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_zero_y_other_loop (2 samples, 0.24%)</title><rect x="261.1" y="165" width="2.9" height="15.0" fill="rgb(251,190,26)" rx="2" ry="2" />
+<text  x="264.12" y="175.5" ></text>
+</g>
+<g >
+<title>silk_NLSF_encode (4 samples, 0.48%)</title><rect x="1064.4" y="165" width="5.7" height="15.0" fill="rgb(208,176,54)" rx="2" ry="2" />
+<text  x="1067.44" y="175.5" ></text>
+</g>
+<g >
+<title>vp8_build_inter16x16_predictors_mb (22 samples, 2.66%)</title><rect x="783.3" y="213" width="31.4" height="15.0" fill="rgb(219,217,34)" rx="2" ry="2" />
+<text  x="786.35" y="223.5" >vp..</text>
+</g>
+<g >
+<title>cricket::WebRtcVideoChannel::WebRtcVideoReceiveStream::OnFrame(webrtc::VideoFrame const&amp;) (2 samples, 0.24%)</title><rect x="995.9" y="213" width="2.9" height="15.0" fill="rgb(211,152,36)" rx="2" ry="2" />
+<text  x="998.95" y="223.5" ></text>
+</g>
+<g >
+<title>szone_size (1 samples, 0.12%)</title><rect x="1095.8" y="181" width="1.5" height="15.0" fill="rgb(231,90,34)" rx="2" ry="2" />
+<text  x="1098.83" y="191.5" ></text>
+</g>
+<g >
+<title>webrtc::vcm::VideoReceiver::Decode(webrtc::VCMEncodedFrame const*) (1 samples, 0.12%)</title><rect x="1000.2" y="325" width="1.5" height="15.0" fill="rgb(239,34,37)" rx="2" ry="2" />
+<text  x="1003.23" y="335.5" ></text>
+</g>
+<g >
+<title>non-virtual thunk to webrtc::internal::VideoSendStreamImpl::OnEncodedImage(webrtc::EncodedImage const&amp;, webrtc::CodecSpecificInfo const*, webrtc::RTPFragmentationHeader const*) (1 samples, 0.12%)</title><rect x="726.3" y="261" width="1.4" height="15.0" fill="rgb(229,53,53)" rx="2" ry="2" />
+<text  x="729.28" y="271.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 0.12%)</title><rect x="99.9" y="293" width="1.4" height="15.0" fill="rgb(249,153,1)" rx="2" ry="2" />
+<text  x="102.89" y="303.5" ></text>
+</g>
+<g >
+<title>silk_process_NLSFs_FLP (4 samples, 0.48%)</title><rect x="1064.4" y="197" width="5.7" height="15.0" fill="rgb(242,73,44)" rx="2" ry="2" />
+<text  x="1067.44" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::RTPSenderVideo::UpdateConditionalRetransmit(unsigned char, long long) (1 samples, 0.12%)</title><rect x="730.6" y="213" width="1.4" height="15.0" fill="rgb(242,37,28)" rx="2" ry="2" />
+<text  x="733.56" y="223.5" ></text>
+</g>
+<g >
+<title>webrtc::SendSideBandwidthEstimation::CurrentEstimate(int*, unsigned char*, long long*) const (1 samples, 0.12%)</title><rect x="121.3" y="309" width="1.4" height="15.0" fill="rgb(205,176,24)" rx="2" ry="2" />
+<text  x="124.29" y="319.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.12%)</title><rect x="57.1" y="405" width="1.4" height="15.0" fill="rgb(205,137,3)" rx="2" ry="2" />
+<text  x="60.09" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_build_intra_predictors_mby_s (1 samples, 0.12%)</title><rect x="271.1" y="181" width="1.4" height="15.0" fill="rgb(224,13,18)" rx="2" ry="2" />
+<text  x="274.11" y="191.5" ></text>
+</g>
+<g >
+<title>rtc::SystemTimeNanos() (1 samples, 0.12%)</title><rect x="1103.0" y="293" width="1.4" height="15.0" fill="rgb(216,142,17)" rx="2" ry="2" />
+<text  x="1105.96" y="303.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::ScopedWorkersExecutor::~ScopedWorkersExecutor() (1 samples, 0.12%)</title><rect x="1122.9" y="453" width="1.5" height="15.0" fill="rgb(225,2,29)" rx="2" ry="2" />
+<text  x="1125.94" y="463.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (5 samples, 0.60%)</title><rect x="85.6" y="325" width="7.2" height="15.0" fill="rgb(237,90,16)" rx="2" ry="2" />
+<text  x="88.62" y="335.5" ></text>
+</g>
+<g >
+<title>base::internal::RegisteredTaskSource::~RegisteredTaskSource() (2 samples, 0.24%)</title><rect x="40.0" y="453" width="2.8" height="15.0" fill="rgb(225,58,14)" rx="2" ry="2" />
+<text  x="42.96" y="463.5" ></text>
+</g>
+<g >
+<title>base::SequenceToken::operator==(base::SequenceToken const&amp;) const (1 samples, 0.12%)</title><rect x="1113.0" y="373" width="1.4" height="15.0" fill="rgb(252,183,17)" rx="2" ry="2" />
+<text  x="1115.95" y="383.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (7 samples, 0.85%)</title><rect x="82.8" y="405" width="10.0" height="15.0" fill="rgb(240,54,34)" rx="2" ry="2" />
+<text  x="85.77" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_encode_bool (1 samples, 0.12%)</title><rect x="680.6" y="213" width="1.4" height="15.0" fill="rgb(239,154,2)" rx="2" ry="2" />
+<text  x="683.62" y="223.5" ></text>
+</g>
+<g >
+<title>silk_find_LPC_FLP (6 samples, 0.73%)</title><rect x="1055.9" y="197" width="8.5" height="15.0" fill="rgb(224,180,5)" rx="2" ry="2" />
+<text  x="1058.88" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequence(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (1 samples, 0.12%)</title><rect x="729.1" y="181" width="1.5" height="15.0" fill="rgb(212,50,1)" rx="2" ry="2" />
+<text  x="732.13" y="191.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (2 samples, 0.24%)</title><rect x="102.7" y="357" width="2.9" height="15.0" fill="rgb(213,225,22)" rx="2" ry="2" />
+<text  x="105.74" y="367.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.12%)</title><rect x="1101.5" y="261" width="1.5" height="15.0" fill="rgb(205,38,51)" rx="2" ry="2" />
+<text  x="1104.54" y="271.5" ></text>
+</g>
+<g >
+<title>vp8_short_inv_walsh4x4_sse2 (2 samples, 0.24%)</title><rect x="978.8" y="213" width="2.9" height="15.0" fill="rgb(226,160,37)" rx="2" ry="2" />
+<text  x="981.83" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_idct_dequant_full_2x_sse2 (4 samples, 0.48%)</title><rect x="157.0" y="181" width="5.7" height="15.0" fill="rgb(251,102,41)" rx="2" ry="2" />
+<text  x="159.96" y="191.5" ></text>
+</g>
+<g >
+<title>silk_warped_autocorrelation_FLP (13 samples, 1.57%)</title><rect x="1071.6" y="197" width="18.5" height="15.0" fill="rgb(232,93,7)" rx="2" ry="2" />
+<text  x="1074.57" y="207.5" ></text>
+</g>
+<g >
+<title>silk_process_NLSFs (4 samples, 0.48%)</title><rect x="1064.4" y="181" width="5.7" height="15.0" fill="rgb(248,93,15)" rx="2" ry="2" />
+<text  x="1067.44" y="191.5" ></text>
+</g>
+<g >
+<title>webrtc::video_coding::FrameBuffer::GetNextFrame() (1 samples, 0.12%)</title><rect x="1104.4" y="325" width="1.4" height="15.0" fill="rgb(217,44,28)" rx="2" ry="2" />
+<text  x="1107.39" y="335.5" ></text>
+</g>
+<g >
+<title>webrtc::(anonymous namespace)::AudioCodingModuleImpl::Add10MsData(webrtc::AudioFrame const&amp;) (65 samples, 7.86%)</title><rect x="1005.9" y="341" width="92.8" height="15.0" fill="rgb(218,43,37)" rx="2" ry="2" />
+<text  x="1008.94" y="351.5" >webrtc::(an..</text>
+</g>
+<g >
+<title>vp8dx_bool_decoder_fill (2 samples, 0.24%)</title><rect x="927.5" y="181" width="2.8" height="15.0" fill="rgb(241,168,47)" rx="2" ry="2" />
+<text  x="930.46" y="191.5" ></text>
+</g>
+<g >
+<title>webrtc::voe::(anonymous namespace)::ChannelSend::SendData(webrtc::AudioFrameType, unsigned char, unsigned int, unsigned char const*, unsigned long) (3 samples, 0.36%)</title><rect x="1094.4" y="325" width="4.3" height="15.0" fill="rgb(248,122,34)" rx="2" ry="2" />
+<text  x="1097.40" y="335.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 0.12%)</title><rect x="41.4" y="389" width="1.4" height="15.0" fill="rgb(206,60,21)" rx="2" ry="2" />
+<text  x="44.39" y="399.5" ></text>
+</g>
+<g >
+<title>rtc::SystemTimeNanos() (1 samples, 0.12%)</title><rect x="1003.1" y="309" width="1.4" height="15.0" fill="rgb(241,229,0)" rx="2" ry="2" />
+<text  x="1006.08" y="319.5" ></text>
+</g>
+<g >
+<title>__psynch_mutexwait (2 samples, 0.24%)</title><rect x="1128.6" y="389" width="2.9" height="15.0" fill="rgb(208,204,51)" rx="2" ry="2" />
+<text  x="1131.65" y="399.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 0.12%)</title><rect x="997.4" y="133" width="1.4" height="15.0" fill="rgb(237,82,27)" rx="2" ry="2" />
+<text  x="1000.38" y="143.5" ></text>
+</g>
+<g >
+<title>mach_msg (1 samples, 0.12%)</title><rect x="729.1" y="69" width="1.5" height="15.0" fill="rgb(210,132,43)" rx="2" ry="2" />
+<text  x="732.13" y="79.5" ></text>
+</g>
+<g >
+<title>silk_Encode (49 samples, 5.93%)</title><rect x="1024.5" y="245" width="69.9" height="15.0" fill="rgb(226,208,25)" rx="2" ry="2" />
+<text  x="1027.49" y="255.5" >silk_En..</text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_half_y_other_loop (5 samples, 0.60%)</title><rect x="371.0" y="165" width="7.1" height="15.0" fill="rgb(226,10,37)" rx="2" ry="2" />
+<text  x="373.99" y="175.5" ></text>
+</g>
+<g >
+<title>base::internal::PriorityQueue::Push(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (1 samples, 0.12%)</title><rect x="1121.5" y="437" width="1.4" height="15.0" fill="rgb(249,130,44)" rx="2" ry="2" />
+<text  x="1124.51" y="447.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::TimedWait(base::TimeDelta const&amp;) (24 samples, 2.90%)</title><rect x="1150.0" y="453" width="34.3" height="15.0" fill="rgb(211,195,44)" rx="2" ry="2" />
+<text  x="1153.05" y="463.5" >ba..</text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (3 samples, 0.36%)</title><rect x="722.0" y="197" width="4.3" height="15.0" fill="rgb(208,76,1)" rx="2" ry="2" />
+<text  x="725.00" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_mv_pred (3 samples, 0.36%)</title><rect x="446.6" y="181" width="4.3" height="15.0" fill="rgb(233,26,52)" rx="2" ry="2" />
+<text  x="449.61" y="191.5" ></text>
+</g>
+<g >
+<title>cost (1 samples, 0.12%)</title><rect x="560.8" y="165" width="1.4" height="15.0" fill="rgb(232,200,3)" rx="2" ry="2" />
+<text  x="563.76" y="175.5" ></text>
+</g>
+<g >
+<title>webrtc::webrtc_repeating_task_impl::RepeatingTaskImpl&lt;webrtc::RtpTransportControllerSend::StartProcessPeriodicTasks()::$_14&gt;::RunClosure() (1 samples, 0.12%)</title><rect x="1103.0" y="341" width="1.4" height="15.0" fill="rgb(241,170,51)" rx="2" ry="2" />
+<text  x="1105.96" y="351.5" ></text>
+</g>
+<g >
+<title>dispatch_queue_get_label (1 samples, 0.12%)</title><rect x="739.1" y="309" width="1.4" height="15.0" fill="rgb(235,116,6)" rx="2" ry="2" />
+<text  x="742.12" y="319.5" ></text>
+</g>
+<g >
+<title>vp8_build_inter16x16_predictors_mb (10 samples, 1.21%)</title><rect x="302.5" y="165" width="14.3" height="15.0" fill="rgb(240,198,7)" rx="2" ry="2" />
+<text  x="305.50" y="175.5" ></text>
+</g>
+<g >
+<title>webrtc::VideoStreamEncoder::OnEncodedImage(webrtc::EncodedImage const&amp;, webrtc::CodecSpecificInfo const*, webrtc::RTPFragmentationHeader const*) (4 samples, 0.48%)</title><rect x="726.3" y="277" width="5.7" height="15.0" fill="rgb(207,88,44)" rx="2" ry="2" />
+<text  x="729.28" y="287.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::ScopedWorkersExecutor::~ScopedWorkersExecutor() (1 samples, 0.12%)</title><rect x="729.1" y="133" width="1.5" height="15.0" fill="rgb(250,61,40)" rx="2" ry="2" />
+<text  x="732.13" y="143.5" ></text>
+</g>
+<g >
+<title>free (1 samples, 0.12%)</title><rect x="97.0" y="389" width="1.5" height="15.0" fill="rgb(211,186,19)" rx="2" ry="2" />
+<text  x="100.04" y="399.5" ></text>
+</g>
+<g >
+<title>thread_start (827 samples, 100.00%)</title><rect x="10.0" y="565" width="1180.0" height="15.0" fill="rgb(238,142,6)" rx="2" ry="2" />
+<text  x="13.00" y="575.5" >thread_start</text>
+</g>
+<g >
+<title>pthread_self (1 samples, 0.12%)</title><rect x="1125.8" y="421" width="1.4" height="15.0" fill="rgb(244,54,33)" rx="2" ry="2" />
+<text  x="1128.79" y="431.5" ></text>
+</g>
+<g >
+<title>base::internal::PooledSequencedTaskRunner::RunsTasksInCurrentSequence() const (3 samples, 0.36%)</title><rect x="1110.1" y="389" width="4.3" height="15.0" fill="rgb(241,52,54)" rx="2" ry="2" />
+<text  x="1113.10" y="399.5" ></text>
+</g>
+<g >
+<title>rtc::RefCountedObject&lt;(anonymous namespace)::FrameAdapter&lt;webrtc::I420BufferInterface&gt; &gt;::~RefCountedObject() (2 samples, 0.24%)</title><rect x="734.8" y="293" width="2.9" height="15.0" fill="rgb(240,137,48)" rx="2" ry="2" />
+<text  x="737.84" y="303.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16x16_ssse3 (1 samples, 0.12%)</title><rect x="254.0" y="165" width="1.4" height="15.0" fill="rgb(236,119,39)" rx="2" ry="2" />
+<text  x="256.99" y="175.5" ></text>
+</g>
+<g >
+<title>malloc (4 samples, 0.48%)</title><rect x="62.8" y="373" width="5.7" height="15.0" fill="rgb(206,79,42)" rx="2" ry="2" />
+<text  x="65.79" y="383.5" ></text>
+</g>
+<g >
+<title>vp8_dequant_idct_add_y_block_sse2 (6 samples, 0.73%)</title><rect x="950.3" y="213" width="8.6" height="15.0" fill="rgb(210,82,16)" rx="2" ry="2" />
+<text  x="953.29" y="223.5" ></text>
+</g>
+<g >
+<title>I420Copy (6 samples, 0.73%)</title><rect x="986.0" y="261" width="8.5" height="15.0" fill="rgb(215,146,18)" rx="2" ry="2" />
+<text  x="988.96" y="271.5" ></text>
+</g>
+<g >
+<title>vp8_dequant_idct_add_uv_block_sse2 (2 samples, 0.24%)</title><rect x="947.4" y="213" width="2.9" height="15.0" fill="rgb(234,107,53)" rx="2" ry="2" />
+<text  x="950.44" y="223.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (1 samples, 0.12%)</title><rect x="729.1" y="85" width="1.5" height="15.0" fill="rgb(253,26,47)" rx="2" ry="2" />
+<text  x="732.13" y="95.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (2 samples, 0.24%)</title><rect x="102.7" y="373" width="2.9" height="15.0" fill="rgb(220,166,53)" rx="2" ry="2" />
+<text  x="105.74" y="383.5" ></text>
+</g>
+<g >
+<title>rtc::RefCountedObject&lt;rtc::BufferT&lt;unsigned char, false&gt; &gt;::~RefCountedObject() (1 samples, 0.12%)</title><rect x="1095.8" y="213" width="1.5" height="15.0" fill="rgb(217,140,30)" rx="2" ry="2" />
+<text  x="1098.83" y="223.5" ></text>
+</g>
+<g >
+<title>celt_encode_with_ec (7 samples, 0.85%)</title><rect x="1007.4" y="245" width="10.0" height="15.0" fill="rgb(250,156,25)" rx="2" ry="2" />
+<text  x="1010.36" y="255.5" ></text>
+</g>
+<g >
+<title>base::ScopedSetSequenceTokenForCurrentThread::ScopedSetSequenceTokenForCurrentThread(base::SequenceToken const&amp;) (1 samples, 0.12%)</title><rect x="55.7" y="421" width="1.4" height="15.0" fill="rgb(212,134,35)" rx="2" ry="2" />
+<text  x="58.66" y="431.5" ></text>
+</g>
+<g >
+<title>base::internal::PooledSequencedTaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (1 samples, 0.12%)</title><rect x="1101.5" y="325" width="1.5" height="15.0" fill="rgb(243,72,6)" rx="2" ry="2" />
+<text  x="1104.54" y="335.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (3 samples, 0.36%)</title><rect x="42.8" y="437" width="4.3" height="15.0" fill="rgb(214,17,37)" rx="2" ry="2" />
+<text  x="45.82" y="447.5" ></text>
+</g>
+<g >
+<title>vp8_decode_frame (147 samples, 17.78%)</title><rect x="776.2" y="229" width="209.8" height="15.0" fill="rgb(219,189,36)" rx="2" ry="2" />
+<text  x="779.22" y="239.5" >vp8_decode_frame</text>
+</g>
+<g >
+<title>vp8_copy_and_extend_frame (7 samples, 0.85%)</title><rect x="716.3" y="229" width="10.0" height="15.0" fill="rgb(221,96,35)" rx="2" ry="2" />
+<text  x="719.29" y="239.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (4 samples, 0.48%)</title><rect x="68.5" y="357" width="5.7" height="15.0" fill="rgb(245,89,21)" rx="2" ry="2" />
+<text  x="71.50" y="367.5" ></text>
+</g>
+<g >
+<title>base::SequencedTaskRunnerHandle::SequencedTaskRunnerHandle(scoped_refptr&lt;base::SequencedTaskRunner&gt;) (3 samples, 0.36%)</title><rect x="1110.1" y="405" width="4.3" height="15.0" fill="rgb(228,124,23)" rx="2" ry="2" />
+<text  x="1113.10" y="415.5" ></text>
+</g>
+<g >
+<title>cost (1 samples, 0.12%)</title><rect x="560.8" y="181" width="1.4" height="15.0" fill="rgb(214,37,14)" rx="2" ry="2" />
+<text  x="563.76" y="191.5" ></text>
+</g>
+<g >
+<title>vpx_variance16x16_avx2 (1 samples, 0.12%)</title><rect x="242.6" y="165" width="1.4" height="15.0" fill="rgb(242,203,32)" rx="2" ry="2" />
+<text  x="245.58" y="175.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedThreadLocalOwnedPointer&lt;base::debug::StackTrace&gt;::Set(std::__Cr::unique_ptr&lt;base::debug::StackTrace, std::__Cr::default_delete&lt;base::debug::StackTrace&gt; &gt;) (4 samples, 0.48%)</title><rect x="95.6" y="405" width="5.7" height="15.0" fill="rgb(210,143,44)" rx="2" ry="2" />
+<text  x="98.61" y="415.5" ></text>
+</g>
+<g >
+<title>extend_plane (4 samples, 0.48%)</title><rect x="700.6" y="229" width="5.7" height="15.0" fill="rgb(229,4,49)" rx="2" ry="2" />
+<text  x="703.59" y="239.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskSource::ClearHeapHandle() (1 samples, 0.12%)</title><rect x="1135.8" y="437" width="1.4" height="15.0" fill="rgb(235,63,51)" rx="2" ry="2" />
+<text  x="1138.78" y="447.5" ></text>
+</g>
+<g >
+<title>VP8_UVSSE (2 samples, 0.24%)</title><rect x="251.1" y="165" width="2.9" height="15.0" fill="rgb(241,89,14)" rx="2" ry="2" />
+<text  x="254.14" y="175.5" ></text>
+</g>
+<g >
+<title>base::ThreadRestrictions::SetSingletonAllowed(bool) (13 samples, 1.57%)</title><rect x="74.2" y="421" width="18.6" height="15.0" fill="rgb(234,163,1)" rx="2" ry="2" />
+<text  x="77.21" y="431.5" ></text>
+</g>
+<g >
+<title>free_small (1 samples, 0.12%)</title><rect x="98.5" y="389" width="1.4" height="15.0" fill="rgb(228,39,20)" rx="2" ry="2" />
+<text  x="101.46" y="399.5" ></text>
+</g>
+<g >
+<title>0x7fff731fb1a0 (1 samples, 0.12%)</title><rect x="1025.9" y="213" width="1.4" height="15.0" fill="rgb(209,172,3)" rx="2" ry="2" />
+<text  x="1028.91" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_short_inv_walsh4x4_sse2 (1 samples, 0.12%)</title><rect x="510.8" y="197" width="1.4" height="15.0" fill="rgb(223,193,33)" rx="2" ry="2" />
+<text  x="513.82" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::webrtc_new_closure_impl::ClosureTask&lt;webrtc::video_coding::FrameBuffer::InsertFrame(std::__Cr::unique_ptr&lt;webrtc::video_coding::EncodedFrame, std::__Cr::default_delete&lt;webrtc::video_coding::EncodedFrame&gt; &gt;)::$_2&gt;::Run() (1 samples, 0.12%)</title><rect x="1003.1" y="357" width="1.4" height="15.0" fill="rgb(240,126,18)" rx="2" ry="2" />
+<text  x="1006.08" y="367.5" ></text>
+</g>
+<g >
+<title>webrtc::RtcEventRtpPacketOutgoing::IsConfigEvent() const (1 samples, 0.12%)</title><rect x="117.0" y="309" width="1.4" height="15.0" fill="rgb(245,32,38)" rx="2" ry="2" />
+<text  x="120.01" y="319.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::WorkerThreadDelegateImpl::CanGetWorkLockRequired(base::internal::WorkerThread*) (6 samples, 0.73%)</title><rect x="1140.1" y="453" width="8.5" height="15.0" fill="rgb(228,64,46)" rx="2" ry="2" />
+<text  x="1143.06" y="463.5" ></text>
+</g>
+<g >
+<title>vp8_copy_mem16x16_sse2 (1 samples, 0.12%)</title><rect x="167.0" y="165" width="1.4" height="15.0" fill="rgb(222,95,38)" rx="2" ry="2" />
+<text  x="169.95" y="175.5" ></text>
+</g>
+<g >
+<title>opus_fft_impl (1 samples, 0.12%)</title><rect x="1023.1" y="213" width="1.4" height="15.0" fill="rgb(233,169,2)" rx="2" ry="2" />
+<text  x="1026.06" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::PriorityQueue::Size() const (1 samples, 0.12%)</title><rect x="1138.6" y="421" width="1.5" height="15.0" fill="rgb(253,52,11)" rx="2" ry="2" />
+<text  x="1141.63" y="431.5" ></text>
+</g>
+<g >
+<title>base::SequenceToken::GetForCurrentThread() (1 samples, 0.12%)</title><rect x="1111.5" y="373" width="1.5" height="15.0" fill="rgb(230,181,43)" rx="2" ry="2" />
+<text  x="1114.52" y="383.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::Delegate::WaitForWork(base::WaitableEvent*) (27 samples, 3.26%)</title><rect x="1148.6" y="469" width="38.5" height="15.0" fill="rgb(211,113,50)" rx="2" ry="2" />
+<text  x="1151.62" y="479.5" >bas..</text>
+</g>
+<g >
+<title>base::internal::DelayedTaskManager::AddDelayedTask(base::internal::Task, base::OnceCallback&lt;void (base::internal::Task)&gt;, scoped_refptr&lt;base::TaskRunner&gt;) (1 samples, 0.12%)</title><rect x="1101.5" y="293" width="1.5" height="15.0" fill="rgb(241,61,3)" rx="2" ry="2" />
+<text  x="1104.54" y="303.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (4 samples, 0.48%)</title><rect x="1115.8" y="453" width="5.7" height="15.0" fill="rgb(250,180,6)" rx="2" ry="2" />
+<text  x="1118.80" y="463.5" ></text>
+</g>
+<g >
+<title>vp8_sixtap_predict8x8_ssse3 (2 samples, 0.24%)</title><rect x="811.9" y="197" width="2.8" height="15.0" fill="rgb(251,150,45)" rx="2" ry="2" />
+<text  x="814.89" y="207.5" ></text>
+</g>
+<g >
+<title>_platform_memset$VARIANT$Haswell (2 samples, 0.24%)</title><rect x="710.6" y="213" width="2.8" height="15.0" fill="rgb(238,122,51)" rx="2" ry="2" />
+<text  x="713.58" y="223.5" ></text>
+</g>
+<g >
+<title>vp8_sixtap_predict8x8_ssse3 (3 samples, 0.36%)</title><rect x="981.7" y="213" width="4.3" height="15.0" fill="rgb(236,224,22)" rx="2" ry="2" />
+<text  x="984.68" y="223.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (2 samples, 0.24%)</title><rect x="241.1" y="181" width="2.9" height="15.0" fill="rgb(208,103,36)" rx="2" ry="2" />
+<text  x="244.15" y="191.5" ></text>
+</g>
+<g >
+<title>base::debug::ScopedTaskRunActivity::ScopedTaskRunActivity(void const*, base::PendingTask const&amp;) (1 samples, 0.12%)</title><rect x="107.0" y="389" width="1.5" height="15.0" fill="rgb(214,61,35)" rx="2" ry="2" />
+<text  x="110.03" y="399.5" ></text>
+</g>
+<g >
+<title>malloc (7 samples, 0.85%)</title><rect x="82.8" y="389" width="10.0" height="15.0" fill="rgb(223,13,17)" rx="2" ry="2" />
+<text  x="85.77" y="399.5" ></text>
+</g>
+<g >
+<title>quant_partition (1 samples, 0.12%)</title><rect x="1013.1" y="181" width="1.4" height="15.0" fill="rgb(232,138,6)" rx="2" ry="2" />
+<text  x="1016.07" y="191.5" ></text>
+</g>
+<g >
+<title>vp8_lookahead_push (7 samples, 0.85%)</title><rect x="716.3" y="245" width="10.0" height="15.0" fill="rgb(243,115,31)" rx="2" ry="2" />
+<text  x="719.29" y="255.5" ></text>
+</g>
+<g >
+<title>cost_mvcomponent (1 samples, 0.12%)</title><rect x="682.0" y="197" width="1.5" height="15.0" fill="rgb(205,183,15)" rx="2" ry="2" />
+<text  x="685.04" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_copy_mem8x8_mmx (1 samples, 0.12%)</title><rect x="308.2" y="149" width="1.4" height="15.0" fill="rgb(225,8,9)" rx="2" ry="2" />
+<text  x="311.21" y="159.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_other_y_other_loop (4 samples, 0.48%)</title><rect x="393.8" y="165" width="5.7" height="15.0" fill="rgb(252,202,32)" rx="2" ry="2" />
+<text  x="396.82" y="175.5" ></text>
+</g>
+<g >
+<title>__ulock_wait (1 samples, 0.12%)</title><rect x="1107.2" y="357" width="1.5" height="15.0" fill="rgb(253,27,32)" rx="2" ry="2" />
+<text  x="1110.24" y="367.5" ></text>
+</g>
+<g >
+<title>free (1 samples, 0.12%)</title><rect x="1095.8" y="197" width="1.5" height="15.0" fill="rgb(206,138,25)" rx="2" ry="2" />
+<text  x="1098.83" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_update_coef_probs (3 samples, 0.36%)</title><rect x="677.8" y="229" width="4.2" height="15.0" fill="rgb(244,92,21)" rx="2" ry="2" />
+<text  x="680.76" y="239.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskTracker::RunSkipOnShutdown(base::internal::Task*) (703 samples, 85.01%)</title><rect x="107.0" y="421" width="1003.1" height="15.0" fill="rgb(206,22,53)" rx="2" ry="2" />
+<text  x="110.03" y="431.5" >base::internal::TaskTracker::RunSkipOnShutdown(base::internal::Task*)</text>
+</g>
+<g >
+<title>vp8_mbloop_filter_vertical_edge_sse2 (3 samples, 0.36%)</title><rect x="964.6" y="181" width="4.2" height="15.0" fill="rgb(241,70,53)" rx="2" ry="2" />
+<text  x="967.56" y="191.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThreadStack::Peek() const (1 samples, 0.12%)</title><rect x="1147.2" y="437" width="1.4" height="15.0" fill="rgb(218,186,1)" rx="2" ry="2" />
+<text  x="1150.19" y="447.5" ></text>
+</g>
+<g >
+<title>std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;* logging::CheckNEImpl&lt;(anonymous namespace)::TlsVectorEntry*, void*&gt;((anonymous namespace)::TlsVectorEntry* const&amp;, void* const&amp;, char const*) (1 samples, 0.12%)</title><rect x="1122.9" y="405" width="1.5" height="15.0" fill="rgb(209,141,26)" rx="2" ry="2" />
+<text  x="1125.94" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_mbloop_filter_horizontal_edge_uv_sse2 (1 samples, 0.12%)</title><rect x="970.3" y="197" width="1.4" height="15.0" fill="rgb(215,160,3)" rx="2" ry="2" />
+<text  x="973.27" y="207.5" ></text>
+</g>
+<g >
+<title>pthread_self (1 samples, 0.12%)</title><rect x="1131.5" y="421" width="1.4" height="15.0" fill="rgb(206,64,26)" rx="2" ry="2" />
+<text  x="1134.50" y="431.5" ></text>
+</g>
+<g >
+<title>small_free_list_remove_ptr_no_clear (1 samples, 0.12%)</title><rect x="91.3" y="277" width="1.5" height="15.0" fill="rgb(230,77,49)" rx="2" ry="2" />
+<text  x="94.33" y="287.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d16_v6_ssse3.vp8_filter_block1d16_v6_ssse3_loop (1 samples, 0.12%)</title><rect x="311.1" y="133" width="1.4" height="15.0" fill="rgb(212,225,32)" rx="2" ry="2" />
+<text  x="314.06" y="143.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_half_y_zero_loop (9 samples, 1.09%)</title><rect x="378.1" y="165" width="12.9" height="15.0" fill="rgb(218,78,23)" rx="2" ry="2" />
+<text  x="381.13" y="175.5" ></text>
+</g>
+<g >
+<title>base::ThreadRestrictions::SetWaitAllowed(bool) (9 samples, 1.09%)</title><rect x="92.8" y="421" width="12.8" height="15.0" fill="rgb(227,168,38)" rx="2" ry="2" />
+<text  x="95.76" y="431.5" ></text>
+</g>
+<g >
+<title>CopyPlane (6 samples, 0.73%)</title><rect x="986.0" y="245" width="8.5" height="15.0" fill="rgb(214,52,4)" rx="2" ry="2" />
+<text  x="988.96" y="255.5" ></text>
+</g>
+<g >
+<title>vpx_post_proc_down_and_across_mb_row_sse2.acrossnextcol (10 samples, 1.21%)</title><rect x="742.0" y="213" width="14.2" height="15.0" fill="rgb(220,164,16)" rx="2" ry="2" />
+<text  x="744.97" y="223.5" ></text>
+</g>
+<g >
+<title>small_malloc_should_clear (2 samples, 0.24%)</title><rect x="102.7" y="309" width="2.9" height="15.0" fill="rgb(229,131,48)" rx="2" ry="2" />
+<text  x="105.74" y="319.5" ></text>
+</g>
+<g >
+<title>quant_all_bands (1 samples, 0.12%)</title><rect x="1013.1" y="229" width="1.4" height="15.0" fill="rgb(205,147,1)" rx="2" ry="2" />
+<text  x="1016.07" y="239.5" ></text>
+</g>
+<g >
+<title>base::Value::InternalCleanup() (1 samples, 0.12%)</title><rect x="734.8" y="229" width="1.5" height="15.0" fill="rgb(216,67,16)" rx="2" ry="2" />
+<text  x="737.84" y="239.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (7 samples, 0.85%)</title><rect x="82.8" y="357" width="10.0" height="15.0" fill="rgb(237,180,34)" rx="2" ry="2" />
+<text  x="85.77" y="367.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_h4_ssse3.filter_block1d8_h4_rowloop_ssse3 (1 samples, 0.12%)</title><rect x="981.7" y="197" width="1.4" height="15.0" fill="rgb(236,145,26)" rx="2" ry="2" />
+<text  x="984.68" y="207.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 0.12%)</title><rect x="997.4" y="117" width="1.4" height="15.0" fill="rgb(239,226,54)" rx="2" ry="2" />
+<text  x="1000.38" y="127.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskTracker::DecrementNumIncompleteTaskSources() (2 samples, 0.24%)</title><rect x="40.0" y="421" width="2.8" height="15.0" fill="rgb(213,170,20)" rx="2" ry="2" />
+<text  x="42.96" y="431.5" ></text>
+</g>
+<g >
+<title>vp8_find_near_mvs (5 samples, 0.60%)</title><rect x="419.5" y="165" width="7.1" height="15.0" fill="rgb(221,93,31)" rx="2" ry="2" />
+<text  x="422.50" y="175.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_h6_ssse3 (1 samples, 0.12%)</title><rect x="205.5" y="165" width="1.4" height="15.0" fill="rgb(252,16,39)" rx="2" ry="2" />
+<text  x="208.48" y="175.5" ></text>
+</g>
+<g >
+<title>dynalloc_analysis (1 samples, 0.12%)</title><rect x="1011.6" y="229" width="1.5" height="15.0" fill="rgb(230,16,50)" rx="2" ry="2" />
+<text  x="1014.64" y="239.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 0.12%)</title><rect x="709.2" y="213" width="1.4" height="15.0" fill="rgb(218,160,13)" rx="2" ry="2" />
+<text  x="712.15" y="223.5" ></text>
+</g>
+<g >
+<title>base::debug::CollectStackTrace(void**, unsigned long) (1 samples, 0.12%)</title><rect x="94.2" y="389" width="1.4" height="15.0" fill="rgb(205,95,0)" rx="2" ry="2" />
+<text  x="97.18" y="399.5" ></text>
+</g>
+<g >
+<title>vp8_find_near_mvs_bias (6 samples, 0.73%)</title><rect x="418.1" y="181" width="8.5" height="15.0" fill="rgb(240,184,2)" rx="2" ry="2" />
+<text  x="421.08" y="191.5" ></text>
+</g>
+<g >
+<title>malloc (4 samples, 0.48%)</title><rect x="68.5" y="389" width="5.7" height="15.0" fill="rgb(248,181,18)" rx="2" ry="2" />
+<text  x="71.50" y="399.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequenceNow(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (1 samples, 0.12%)</title><rect x="729.1" y="165" width="1.5" height="15.0" fill="rgb(214,145,5)" rx="2" ry="2" />
+<text  x="732.13" y="175.5" ></text>
+</g>
+<g >
+<title>webrtc::(anonymous namespace)::SendProcessingUsage2::FrameCaptured(webrtc::VideoFrame const&amp;, long long, long long) (1 samples, 0.12%)</title><rect x="732.0" y="293" width="1.4" height="15.0" fill="rgb(245,15,8)" rx="2" ry="2" />
+<text  x="734.98" y="303.5" ></text>
+</g>
+<g >
+<title>webrtc::RtcEventLogImpl::LogToMemory(std::__Cr::unique_ptr&lt;webrtc::RtcEvent, std::__Cr::default_delete&lt;webrtc::RtcEvent&gt; &gt;) (2 samples, 0.24%)</title><rect x="115.6" y="325" width="2.8" height="15.0" fill="rgb(221,187,13)" rx="2" ry="2" />
+<text  x="118.59" y="335.5" ></text>
+</g>
+<g >
+<title>rtc::RefCountedObject&lt;blink::WebRtcVideoFrameAdapter&gt;::Release() const (2 samples, 0.24%)</title><rect x="734.8" y="341" width="2.9" height="15.0" fill="rgb(210,110,19)" rx="2" ry="2" />
+<text  x="737.84" y="351.5" ></text>
+</g>
+<g >
+<title>write_mb_features (2 samples, 0.24%)</title><rect x="686.3" y="229" width="2.9" height="15.0" fill="rgb(212,15,40)" rx="2" ry="2" />
+<text  x="689.32" y="239.5" ></text>
+</g>
+<g >
+<title>base::internal::PooledSequencedTaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (1 samples, 0.12%)</title><rect x="729.1" y="197" width="1.5" height="15.0" fill="rgb(226,15,53)" rx="2" ry="2" />
+<text  x="732.13" y="207.5" ></text>
+</g>
+<g >
+<title>base::Value::~Value() (1 samples, 0.12%)</title><rect x="734.8" y="245" width="1.5" height="15.0" fill="rgb(230,140,41)" rx="2" ry="2" />
+<text  x="737.84" y="255.5" ></text>
+</g>
+<g >
+<title>rtc::RefCountedObject&lt;blink::WebRtcVideoFrameAdapter&gt;::~RefCountedObject() (2 samples, 0.24%)</title><rect x="734.8" y="325" width="2.9" height="15.0" fill="rgb(206,214,9)" rx="2" ry="2" />
+<text  x="737.84" y="335.5" ></text>
+</g>
+<g >
+<title>media::VideoFrameLayout::CreateWithStrides(media::VideoPixelFormat, gfx::Size const&amp;, std::__Cr::vector&lt;int, std::__Cr::allocator&lt;int&gt; &gt;) (1 samples, 0.12%)</title><rect x="997.4" y="149" width="1.4" height="15.0" fill="rgb(250,41,0)" rx="2" ry="2" />
+<text  x="1000.38" y="159.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 0.12%)</title><rect x="99.9" y="389" width="1.4" height="15.0" fill="rgb(208,110,28)" rx="2" ry="2" />
+<text  x="102.89" y="399.5" ></text>
+</g>
+<g >
+<title>-[NSAutoreleasePool drain] (3 samples, 0.36%)</title><rect x="12.9" y="469" width="4.2" height="15.0" fill="rgb(252,145,35)" rx="2" ry="2" />
+<text  x="15.85" y="479.5" ></text>
+</g>
+<g >
+<title>opus_fft_impl (2 samples, 0.24%)</title><rect x="1008.8" y="197" width="2.8" height="15.0" fill="rgb(234,2,3)" rx="2" ry="2" />
+<text  x="1011.79" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_encode_bool (1 samples, 0.12%)</title><rect x="597.9" y="213" width="1.4" height="15.0" fill="rgb(254,134,18)" rx="2" ry="2" />
+<text  x="600.86" y="223.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 0.12%)</title><rect x="781.9" y="213" width="1.4" height="15.0" fill="rgb(212,105,54)" rx="2" ry="2" />
+<text  x="784.92" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedThreadLocalOwnedPointer&lt;base::debug::StackTrace&gt;::Set(std::__Cr::unique_ptr&lt;base::debug::StackTrace, std::__Cr::default_delete&lt;base::debug::StackTrace&gt; &gt;) (5 samples, 0.60%)</title><rect x="61.4" y="405" width="7.1" height="15.0" fill="rgb(207,43,23)" rx="2" ry="2" />
+<text  x="64.37" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_sixtap_predict16x16_ssse3 (2 samples, 0.24%)</title><rect x="175.5" y="165" width="2.9" height="15.0" fill="rgb(245,212,18)" rx="2" ry="2" />
+<text  x="178.51" y="175.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.12%)</title><rect x="1111.5" y="357" width="1.5" height="15.0" fill="rgb(241,165,20)" rx="2" ry="2" />
+<text  x="1114.52" y="367.5" ></text>
+</g>
+<g >
+<title>vp8_pick_inter_mode (187 samples, 22.61%)</title><rect x="212.6" y="197" width="266.8" height="15.0" fill="rgb(235,128,35)" rx="2" ry="2" />
+<text  x="215.61" y="207.5" >vp8_pick_inter_mode</text>
+</g>
+<g >
+<title>base::internal::ScopedSetSequenceLocalStorageMapForCurrentThread::ScopedSetSequenceLocalStorageMapForCurrentThread(base::internal::SequenceLocalStorageMap*) (1 samples, 0.12%)</title><rect x="105.6" y="421" width="1.4" height="15.0" fill="rgb(222,158,10)" rx="2" ry="2" />
+<text  x="108.60" y="431.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 0.12%)</title><rect x="997.4" y="37" width="1.4" height="15.0" fill="rgb(210,134,46)" rx="2" ry="2" />
+<text  x="1000.38" y="47.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d16_v6_ssse3.vp8_filter_block1d16_v6_ssse3_loop (4 samples, 0.48%)</title><rect x="806.2" y="181" width="5.7" height="15.0" fill="rgb(209,191,18)" rx="2" ry="2" />
+<text  x="809.18" y="191.5" ></text>
+</g>
+<g >
+<title>mach_msg (23 samples, 2.78%)</title><rect x="1151.5" y="421" width="32.8" height="15.0" fill="rgb(224,224,34)" rx="2" ry="2" />
+<text  x="1154.48" y="431.5" >ma..</text>
+</g>
+<g >
+<title>pthread_mutex_lock (2 samples, 0.24%)</title><rect x="44.2" y="421" width="2.9" height="15.0" fill="rgb(244,27,13)" rx="2" ry="2" />
+<text  x="47.24" y="431.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_from_free_list (2 samples, 0.24%)</title><rect x="65.6" y="277" width="2.9" height="15.0" fill="rgb(251,185,25)" rx="2" ry="2" />
+<text  x="68.65" y="287.5" ></text>
+</g>
+<g >
+<title>vp8dx_receive_compressed_data (147 samples, 17.78%)</title><rect x="776.2" y="245" width="209.8" height="15.0" fill="rgb(236,113,25)" rx="2" ry="2" />
+<text  x="779.22" y="255.5" >vp8dx_receive_compressed_data</text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (1 samples, 0.12%)</title><rect x="736.3" y="149" width="1.4" height="15.0" fill="rgb(224,3,47)" rx="2" ry="2" />
+<text  x="739.26" y="159.5" ></text>
+</g>
+<g >
+<title>vp8_idct_dequant_0_2x_sse2 (4 samples, 0.48%)</title><rect x="151.3" y="181" width="5.7" height="15.0" fill="rgb(210,18,6)" rx="2" ry="2" />
+<text  x="154.26" y="191.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (4 samples, 0.48%)</title><rect x="1125.8" y="453" width="5.7" height="15.0" fill="rgb(240,5,13)" rx="2" ry="2" />
+<text  x="1128.79" y="463.5" ></text>
+</g>
+<g >
+<title>tonality_analysis (5 samples, 0.60%)</title><rect x="1017.4" y="229" width="7.1" height="15.0" fill="rgb(239,157,39)" rx="2" ry="2" />
+<text  x="1020.35" y="239.5" ></text>
+</g>
+<g >
+<title>cost (1 samples, 0.12%)</title><rect x="560.8" y="197" width="1.4" height="15.0" fill="rgb(240,85,44)" rx="2" ry="2" />
+<text  x="563.76" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_encode_bool (5 samples, 0.60%)</title><rect x="599.3" y="229" width="7.1" height="15.0" fill="rgb(206,70,15)" rx="2" ry="2" />
+<text  x="602.29" y="239.5" ></text>
+</g>
+<g >
+<title>vpx_skin_pixel (2 samples, 0.24%)</title><rect x="713.4" y="245" width="2.9" height="15.0" fill="rgb(247,188,12)" rx="2" ry="2" />
+<text  x="716.43" y="255.5" ></text>
+</g>
+<g >
+<title>webrtc::webrtc_new_closure_impl::ClosureTask&lt;webrtc::VideoStreamEncoder::OnFrame(webrtc::VideoFrame const&amp;)::$_9&gt;::~ClosureTask() (2 samples, 0.24%)</title><rect x="734.8" y="357" width="2.9" height="15.0" fill="rgb(248,156,45)" rx="2" ry="2" />
+<text  x="737.84" y="367.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::MaybeScheduleAdjustMaxTasksLockRequired(base::internal::ThreadGroupImpl::ScopedWorkersExecutor*) (1 samples, 0.12%)</title><rect x="1138.6" y="437" width="1.5" height="15.0" fill="rgb(241,115,51)" rx="2" ry="2" />
+<text  x="1141.63" y="447.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (4 samples, 0.48%)</title><rect x="62.8" y="293" width="5.7" height="15.0" fill="rgb(235,210,17)" rx="2" ry="2" />
+<text  x="65.79" y="303.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (8 samples, 0.97%)</title><rect x="21.4" y="421" width="11.4" height="15.0" fill="rgb(224,110,19)" rx="2" ry="2" />
+<text  x="24.41" y="431.5" ></text>
+</g>
+<g >
+<title>silk_resampler (3 samples, 0.36%)</title><rect x="1090.1" y="229" width="4.3" height="15.0" fill="rgb(227,53,51)" rx="2" ry="2" />
+<text  x="1093.12" y="239.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostImmediateTaskImpl(base::sequence_manager::internal::PostedTask, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (1 samples, 0.12%)</title><rect x="736.3" y="85" width="1.4" height="15.0" fill="rgb(216,45,1)" rx="2" ry="2" />
+<text  x="739.26" y="95.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskTracker::RunOrSkipTask(base::internal::Task, base::internal::TaskSource*, base::TaskTraits const&amp;, bool) (744 samples, 89.96%)</title><rect x="52.8" y="437" width="1061.6" height="15.0" fill="rgb(234,38,37)" rx="2" ry="2" />
+<text  x="55.81" y="447.5" >base::internal::TaskTracker::RunOrSkipTask(base::internal::Task, base::internal::TaskSource*, base::TaskTraits const&amp;, bool)</text>
+</g>
+<g >
+<title>mach_absolute_time (1 samples, 0.12%)</title><rect x="1003.1" y="293" width="1.4" height="15.0" fill="rgb(230,89,17)" rx="2" ry="2" />
+<text  x="1006.08" y="303.5" ></text>
+</g>
+<g >
+<title>vpx_variance16x16_avx2 (3 samples, 0.36%)</title><rect x="413.8" y="165" width="4.3" height="15.0" fill="rgb(254,100,40)" rx="2" ry="2" />
+<text  x="416.80" y="175.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_lock_slow (2 samples, 0.24%)</title><rect x="1128.6" y="421" width="2.9" height="15.0" fill="rgb(212,137,2)" rx="2" ry="2" />
+<text  x="1131.65" y="431.5" ></text>
+</g>
+<g >
+<title>free (1 samples, 0.12%)</title><rect x="1104.4" y="293" width="1.4" height="15.0" fill="rgb(250,97,13)" rx="2" ry="2" />
+<text  x="1107.39" y="303.5" ></text>
+</g>
+<g >
+<title>base::subtle::TimeTicksNowIgnoringOverride() (1 samples, 0.12%)</title><rect x="1150.0" y="421" width="1.5" height="15.0" fill="rgb(213,27,17)" rx="2" ry="2" />
+<text  x="1153.05" y="431.5" ></text>
+</g>
+<g >
+<title>vpx_codec_encode (420 samples, 50.79%)</title><rect x="127.0" y="293" width="599.3" height="15.0" fill="rgb(254,100,3)" rx="2" ry="2" />
+<text  x="130.00" y="303.5" >vpx_codec_encode</text>
+</g>
+<g >
+<title>vp8_filter_block1d16_h6_ssse3.filter_block1d16_h6_rowloop_ssse3 (1 samples, 0.12%)</title><rect x="309.6" y="133" width="1.5" height="15.0" fill="rgb(232,222,22)" rx="2" ry="2" />
+<text  x="312.64" y="143.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_other_y_zero_loop (1 samples, 0.12%)</title><rect x="399.5" y="165" width="1.5" height="15.0" fill="rgb(254,193,15)" rx="2" ry="2" />
+<text  x="402.53" y="175.5" ></text>
+</g>
+<g >
+<title>vpx_codec_control_ (1 samples, 0.12%)</title><rect x="125.6" y="293" width="1.4" height="15.0" fill="rgb(247,152,42)" rx="2" ry="2" />
+<text  x="128.57" y="303.5" ></text>
+</g>
+<g >
+<title>vp8_denoiser_filter_sse2 (9 samples, 1.09%)</title><rect x="325.3" y="165" width="12.9" height="15.0" fill="rgb(231,23,54)" rx="2" ry="2" />
+<text  x="328.33" y="175.5" ></text>
+</g>
+<g >
+<title>webrtc::SequenceCheckerImpl::IsCurrent() const (1 samples, 0.12%)</title><rect x="1000.2" y="309" width="1.5" height="15.0" fill="rgb(221,195,26)" rx="2" ry="2" />
+<text  x="1003.23" y="319.5" ></text>
+</g>
+<g >
+<title>vp8_find_near_mvs (1 samples, 0.12%)</title><rect x="607.8" y="229" width="1.5" height="15.0" fill="rgb(229,117,45)" rx="2" ry="2" />
+<text  x="610.85" y="239.5" ></text>
+</g>
+<g >
+<title>vp8_mbloop_filter_vertical_edge_uv_sse2 (4 samples, 0.48%)</title><rect x="971.7" y="197" width="5.7" height="15.0" fill="rgb(252,161,29)" rx="2" ry="2" />
+<text  x="974.69" y="207.5" ></text>
+</g>
+<g >
+<title>compute_mdcts (2 samples, 0.24%)</title><rect x="1008.8" y="229" width="2.8" height="15.0" fill="rgb(244,73,3)" rx="2" ry="2" />
+<text  x="1011.79" y="239.5" ></text>
+</g>
+<g >
+<title>base::Histogram::AddCount(int, int) (2 samples, 0.24%)</title><rect x="52.8" y="421" width="2.9" height="15.0" fill="rgb(243,121,7)" rx="2" ry="2" />
+<text  x="55.81" y="431.5" ></text>
+</g>
+<g >
+<title>vp8_short_fdct8x4_sse2 (1 samples, 0.12%)</title><rect x="211.2" y="181" width="1.4" height="15.0" fill="rgb(216,196,7)" rx="2" ry="2" />
+<text  x="214.19" y="191.5" ></text>
+</g>
+<g >
+<title>(anonymous namespace)::WebrtcTaskQueue::RunTask((anonymous namespace)::WebrtcTaskQueue*, scoped_refptr&lt;base::RefCountedData&lt;bool&gt; &gt;, std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;) (698 samples, 84.40%)</title><rect x="109.9" y="373" width="995.9" height="15.0" fill="rgb(209,218,43)" rx="2" ry="2" />
+<text  x="112.88" y="383.5" >(anonymous namespace)::WebrtcTaskQueue::RunTask((anonymous namespace)::WebrtcTaskQueue*, scoped_refptr&lt;base::RefCountedData&lt;bool&gt; &gt;, std::..</text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (1 samples, 0.12%)</title><rect x="729.1" y="213" width="1.5" height="15.0" fill="rgb(248,198,35)" rx="2" ry="2" />
+<text  x="732.13" y="223.5" ></text>
+</g>
+<g >
+<title>webrtc::RTPSenderAudio::SendAudio(webrtc::AudioFrameType, signed char, unsigned int, unsigned char const*, unsigned long) (3 samples, 0.36%)</title><rect x="1094.4" y="309" width="4.3" height="15.0" fill="rgb(239,154,50)" rx="2" ry="2" />
+<text  x="1097.40" y="319.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpTransportControllerSend::UpdateControllerWithTimeInterval() (1 samples, 0.12%)</title><rect x="1103.0" y="325" width="1.4" height="15.0" fill="rgb(208,60,47)" rx="2" ry="2" />
+<text  x="1105.96" y="335.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_zero_y_other_loop (4 samples, 0.48%)</title><rect x="408.1" y="165" width="5.7" height="15.0" fill="rgb(253,49,33)" rx="2" ry="2" />
+<text  x="411.09" y="175.5" ></text>
+</g>
+<g >
+<title>silk_apply_sine_window_FLP (1 samples, 0.12%)</title><rect x="1070.1" y="197" width="1.5" height="15.0" fill="rgb(254,23,31)" rx="2" ry="2" />
+<text  x="1073.15" y="207.5" ></text>
+</g>
+<g >
+<title>base::ScopedSetSequenceTokenForCurrentThread::~ScopedSetSequenceTokenForCurrentThread() (1 samples, 0.12%)</title><rect x="57.1" y="421" width="1.4" height="15.0" fill="rgb(251,145,31)" rx="2" ry="2" />
+<text  x="60.09" y="431.5" ></text>
+</g>
+<g >
+<title>media::VideoFrame::~VideoFrame() (2 samples, 0.24%)</title><rect x="734.8" y="261" width="2.9" height="15.0" fill="rgb(252,59,49)" rx="2" ry="2" />
+<text  x="737.84" y="271.5" ></text>
+</g>
+<g >
+<title>webrtc::webrtc_repeating_task_impl::RepeatingTaskImpl&lt;webrtc::video_coding::FrameBuffer::StartWaitForNextFrameOnQueue()::$_1&gt;::RunClosure() (1 samples, 0.12%)</title><rect x="1104.4" y="341" width="1.4" height="15.0" fill="rgb(209,62,52)" rx="2" ry="2" />
+<text  x="1107.39" y="351.5" ></text>
+</g>
+<g >
+<title>webrtc::VCMTiming::StopDecodeTimer(int, long long) (1 samples, 0.12%)</title><rect x="994.5" y="245" width="1.4" height="15.0" fill="rgb(219,142,8)" rx="2" ry="2" />
+<text  x="997.52" y="255.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.12%)</title><rect x="1122.9" y="421" width="1.5" height="15.0" fill="rgb(231,103,51)" rx="2" ry="2" />
+<text  x="1125.94" y="431.5" ></text>
+</g>
+<g >
+<title>vpx_sub_pixel_variance16xh_ssse3.x_half_y_nonzero (1 samples, 0.12%)</title><rect x="369.6" y="165" width="1.4" height="15.0" fill="rgb(211,8,22)" rx="2" ry="2" />
+<text  x="372.56" y="175.5" ></text>
+</g>
+<g >
+<title>vp8_short_inv_walsh4x4_1_c (2 samples, 0.24%)</title><rect x="508.0" y="197" width="2.8" height="15.0" fill="rgb(223,117,52)" rx="2" ry="2" />
+<text  x="510.97" y="207.5" ></text>
+</g>
+<g >
+<title>silk_resampler_private_down_FIR (3 samples, 0.36%)</title><rect x="1090.1" y="213" width="4.3" height="15.0" fill="rgb(242,219,4)" rx="2" ry="2" />
+<text  x="1093.12" y="223.5" ></text>
+</g>
+<g >
+<title>quant_partition (1 samples, 0.12%)</title><rect x="1013.1" y="197" width="1.4" height="15.0" fill="rgb(222,204,39)" rx="2" ry="2" />
+<text  x="1016.07" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_receive_raw_frame (7 samples, 0.85%)</title><rect x="716.3" y="261" width="10.0" height="15.0" fill="rgb(219,119,42)" rx="2" ry="2" />
+<text  x="719.29" y="271.5" ></text>
+</g>
+<g >
+<title>webrtc::ReceiveStatisticsProxy::OnRenderedFrame(webrtc::VideoFrame const&amp;) (1 samples, 0.12%)</title><rect x="998.8" y="213" width="1.4" height="15.0" fill="rgb(245,105,8)" rx="2" ry="2" />
+<text  x="1001.80" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::WakeUp() (1 samples, 0.12%)</title><rect x="729.1" y="101" width="1.5" height="15.0" fill="rgb(251,192,39)" rx="2" ry="2" />
+<text  x="732.13" y="111.5" ></text>
+</g>
+<g >
+<title>malloc (3 samples, 0.36%)</title><rect x="101.3" y="389" width="4.3" height="15.0" fill="rgb(235,83,40)" rx="2" ry="2" />
+<text  x="104.32" y="399.5" ></text>
+</g>
+<g >
+<title>webrtc::LibvpxVp8Decoder::ReturnFrame(vpx_image const*, unsigned int, int) (10 samples, 1.21%)</title><rect x="986.0" y="277" width="14.2" height="15.0" fill="rgb(250,112,24)" rx="2" ry="2" />
+<text  x="988.96" y="287.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpVideoSender::OnEncodedImage(webrtc::EncodedImage const&amp;, webrtc::CodecSpecificInfo const*, webrtc::RTPFragmentationHeader const*) (1 samples, 0.12%)</title><rect x="730.6" y="245" width="1.4" height="15.0" fill="rgb(246,135,47)" rx="2" ry="2" />
+<text  x="733.56" y="255.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::RunPooledWorker  0x6574f4 (827 samples, 100.00%)</title><rect x="10.0" y="581" width="1180.0" height="15.0" fill="rgb(218,77,21)" rx="2" ry="2" />
+<text  x="13.00" y="591.5" >base::internal::WorkerThread::RunPooledWorker  0x6574f4</text>
+</g>
+<g >
+<title>copy_and_extend_plane (7 samples, 0.85%)</title><rect x="716.3" y="213" width="10.0" height="15.0" fill="rgb(245,102,54)" rx="2" ry="2" />
+<text  x="719.29" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::PushTaskSourceAndWakeUpWorkers(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (1 samples, 0.12%)</title><rect x="729.1" y="149" width="1.5" height="15.0" fill="rgb(227,79,13)" rx="2" ry="2" />
+<text  x="732.13" y="159.5" ></text>
+</g>
+<g >
+<title>vp8_pack_tokens (48 samples, 5.80%)</title><rect x="609.3" y="229" width="68.5" height="15.0" fill="rgb(212,118,12)" rx="2" ry="2" />
+<text  x="612.27" y="239.5" >vp8_pac..</text>
+</g>
+<g >
+<title>mlp_process (1 samples, 0.12%)</title><rect x="1020.2" y="213" width="1.4" height="15.0" fill="rgb(212,96,9)" rx="2" ry="2" />
+<text  x="1023.21" y="223.5" ></text>
+</g>
+<g >
+<title>run_analysis (5 samples, 0.60%)</title><rect x="1017.4" y="245" width="7.1" height="15.0" fill="rgb(239,175,7)" rx="2" ry="2" />
+<text  x="1020.35" y="255.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_h6_ssse3.filter_block1d8_h6_rowloop_ssse3 (1 samples, 0.12%)</title><rect x="983.1" y="197" width="1.4" height="15.0" fill="rgb(217,73,3)" rx="2" ry="2" />
+<text  x="986.11" y="207.5" ></text>
+</g>
+<g >
+<title>vp8_encode_motion_vector (1 samples, 0.12%)</title><rect x="606.4" y="229" width="1.4" height="15.0" fill="rgb(234,52,23)" rx="2" ry="2" />
+<text  x="609.42" y="239.5" ></text>
+</g>
+<g >
+<title>vp8_copy_mem8x8_mmx (1 samples, 0.12%)</title><rect x="343.9" y="149" width="1.4" height="15.0" fill="rgb(215,68,16)" rx="2" ry="2" />
+<text  x="346.88" y="159.5" ></text>
+</g>
+<g >
+<title>encode_mb_row (300 samples, 36.28%)</title><rect x="132.7" y="229" width="428.1" height="15.0" fill="rgb(209,154,42)" rx="2" ry="2" />
+<text  x="135.71" y="239.5" >encode_mb_row</text>
+</g>
+<g >
+<title>WebRtcOpus_Encode (62 samples, 7.50%)</title><rect x="1005.9" y="293" width="88.5" height="15.0" fill="rgb(247,103,32)" rx="2" ry="2" />
+<text  x="1008.94" y="303.5" >WebRtcOpus..</text>
+</g>
+<g >
+<title>vp8_short_fdct8x4_sse2 (20 samples, 2.42%)</title><rect x="479.4" y="197" width="28.6" height="15.0" fill="rgb(208,20,42)" rx="2" ry="2" />
+<text  x="482.43" y="207.5" >vp..</text>
+</g>
+<g >
+<title>vp8cx_mb_init_quantizer (1 samples, 0.12%)</title><rect x="563.6" y="229" width="1.4" height="15.0" fill="rgb(244,191,4)" rx="2" ry="2" />
+<text  x="566.62" y="239.5" ></text>
+</g>
+<g >
+<title>base::circular_deque&lt;base::internal::Task&gt;::pop_front() (1 samples, 0.12%)</title><rect x="48.5" y="421" width="1.5" height="15.0" fill="rgb(212,192,53)" rx="2" ry="2" />
+<text  x="51.52" y="431.5" ></text>
+</g>
+<g >
+<title>vp8_idct_dequant_full_2x_sse2 (3 samples, 0.36%)</title><rect x="954.6" y="197" width="4.3" height="15.0" fill="rgb(210,175,23)" rx="2" ry="2" />
+<text  x="957.57" y="207.5" ></text>
+</g>
+<g >
+<title>base::allocator::(anonymous namespace)::MallocImpl(base::allocator::AllocatorDispatch const*, unsigned long, void*) (1 samples, 0.12%)</title><rect x="84.2" y="341" width="1.4" height="15.0" fill="rgb(218,107,27)" rx="2" ry="2" />
+<text  x="87.20" y="351.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_h4_ssse3.filter_block1d8_h4_rowloop_ssse3 (1 samples, 0.12%)</title><rect x="313.9" y="133" width="1.4" height="15.0" fill="rgb(250,54,26)" rx="2" ry="2" />
+<text  x="316.92" y="143.5" ></text>
+</g>
+<g >
+<title>webrtc::RmsLevel::Analyze(rtc::ArrayView&lt;short const, -4711l&gt;) (2 samples, 0.24%)</title><rect x="1098.7" y="341" width="2.8" height="15.0" fill="rgb(228,213,6)" rx="2" ry="2" />
+<text  x="1101.68" y="351.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_lock_slow (3 samples, 0.36%)</title><rect x="1115.8" y="421" width="4.3" height="15.0" fill="rgb(254,127,30)" rx="2" ry="2" />
+<text  x="1118.80" y="431.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.12%)</title><rect x="1000.2" y="293" width="1.5" height="15.0" fill="rgb(218,137,9)" rx="2" ry="2" />
+<text  x="1003.23" y="303.5" ></text>
+</g>
+<g >
+<title>vpx_dc_predictor_16x16_sse2.loop (1 samples, 0.12%)</title><rect x="452.3" y="181" width="1.4" height="15.0" fill="rgb(242,179,2)" rx="2" ry="2" />
+<text  x="455.32" y="191.5" ></text>
+</g>
+<g >
+<title>vp8_copy_mem16x16_sse2 (2 samples, 0.24%)</title><rect x="316.8" y="165" width="2.8" height="15.0" fill="rgb(219,37,11)" rx="2" ry="2" />
+<text  x="319.77" y="175.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (23 samples, 2.78%)</title><rect x="1151.5" y="405" width="32.8" height="15.0" fill="rgb(210,147,43)" rx="2" ry="2" />
+<text  x="1154.48" y="415.5" >ma..</text>
+</g>
+<g >
+<title>webrtc::AudioEncoder::Encode(unsigned int, rtc::ArrayView&lt;short const, -4711l&gt;, rtc::BufferT&lt;unsigned char, false&gt;*) (62 samples, 7.50%)</title><rect x="1005.9" y="325" width="88.5" height="15.0" fill="rgb(241,172,54)" rx="2" ry="2" />
+<text  x="1008.94" y="335.5" >webrtc::Au..</text>
+</g>
+<g >
+<title>mach_msg (8 samples, 0.97%)</title><rect x="21.4" y="437" width="11.4" height="15.0" fill="rgb(205,221,13)" rx="2" ry="2" />
+<text  x="24.41" y="447.5" ></text>
+</g>
+<g >
+<title>vp8_decode (147 samples, 17.78%)</title><rect x="776.2" y="261" width="209.8" height="15.0" fill="rgb(249,33,50)" rx="2" ry="2" />
+<text  x="779.22" y="271.5" >vp8_decode</text>
+</g>
+<g >
+<title>base::internal::TaskTracker::RunAndPopNextTask(base::internal::DecoratorWithTaskSource&lt;base::internal::TaskSource::RunIntent, base::internal::RegisteredTaskSource&gt;) (754 samples, 91.17%)</title><rect x="38.5" y="469" width="1075.9" height="15.0" fill="rgb(232,14,31)" rx="2" ry="2" />
+<text  x="41.54" y="479.5" >base::internal::TaskTracker::RunAndPopNextTask(base::internal::DecoratorWithTaskSource&lt;base::internal::TaskSource::RunIntent, base::internal::Registe..</text>
+</g>
+<g >
+<title>void std::__Cr::__function::__policy_invoker&lt;void (std::__Cr::unique_ptr&lt;webrtc::RtcEvent, std::__Cr::default_delete&lt;webrtc::RtcEvent&gt; &gt;)&gt;::__call_impl&lt;std::__Cr::__function::__alloc_func&lt;webrtc::RtcEventLogImpl::Log(std::__Cr::unique_ptr&lt;webrtc::RtcEvent, std::__Cr::default_delete&lt;webrtc::RtcEvent&gt; &gt;)::$_3, std::__Cr::allocator&lt;webrtc::RtcEventLogImpl::Log(std::__Cr::unique_ptr&lt;webrtc::RtcEvent, std::__Cr::default_delete&lt;webrtc::RtcEvent&gt; &gt;)::$_3&gt;, void (std::__Cr::unique_ptr&lt;webrtc::RtcEvent, std::__Cr::default_delete&lt;webrtc::RtcEvent&gt; &gt;)&gt; &gt;(std::__Cr::__function::__policy_storage const*, std::__Cr::unique_ptr&lt;webrtc::RtcEvent, std::__Cr::default_delete&lt;webrtc::RtcEvent&gt; &gt;&amp;&amp;) (2 samples, 0.24%)</title><rect x="115.6" y="341" width="2.8" height="15.0" fill="rgb(231,168,54)" rx="2" ry="2" />
+<text  x="118.59" y="351.5" ></text>
+</g>
+<g >
+<title>media::VideoFrame::WrapExternalYuvData(media::VideoPixelFormat, gfx::Size const&amp;, gfx::Rect const&amp;, gfx::Size const&amp;, int, int, int, unsigned char*, unsigned char*, unsigned char*, base::TimeDelta) (1 samples, 0.12%)</title><rect x="997.4" y="165" width="1.4" height="15.0" fill="rgb(228,185,34)" rx="2" ry="2" />
+<text  x="1000.38" y="175.5" ></text>
+</g>
+<g >
+<title>base::SampleVectorBase::Accumulate(int, int) (2 samples, 0.24%)</title><rect x="52.8" y="405" width="2.9" height="15.0" fill="rgb(228,106,4)" rx="2" ry="2" />
+<text  x="55.81" y="415.5" ></text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;, void&gt;::Invoke&lt;base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;, scoped_refptr&lt;media::VideoFrame&gt; &gt;(base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;) (1 samples, 0.12%)</title><rect x="736.3" y="245" width="1.4" height="15.0" fill="rgb(244,117,14)" rx="2" ry="2" />
+<text  x="739.26" y="255.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 0.12%)</title><rect x="1120.1" y="437" width="1.4" height="15.0" fill="rgb(247,108,36)" rx="2" ry="2" />
+<text  x="1123.08" y="447.5" ></text>
+</g>
+<g >
+<title>vp8cx_encode_inter_macroblock (293 samples, 35.43%)</title><rect x="139.8" y="213" width="418.1" height="15.0" fill="rgb(226,13,0)" rx="2" ry="2" />
+<text  x="142.84" y="223.5" >vp8cx_encode_inter_macroblock</text>
+</g>
+<g >
+<title>webrtc::RateStatistics::Update(unsigned long, long long) (1 samples, 0.12%)</title><rect x="730.6" y="197" width="1.4" height="15.0" fill="rgb(249,88,9)" rx="2" ry="2" />
+<text  x="733.56" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::RateStatistics::EraseOld(long long) (1 samples, 0.12%)</title><rect x="730.6" y="181" width="1.4" height="15.0" fill="rgb(253,182,17)" rx="2" ry="2" />
+<text  x="733.56" y="191.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacket::~RtpPacket() (1 samples, 0.12%)</title><rect x="1095.8" y="245" width="1.5" height="15.0" fill="rgb(235,229,5)" rx="2" ry="2" />
+<text  x="1098.83" y="255.5" ></text>
+</g>
+<g >
+<title>vp8_reset_mb_tokens_context (1 samples, 0.12%)</title><rect x="977.4" y="213" width="1.4" height="15.0" fill="rgb(205,70,41)" rx="2" ry="2" />
+<text  x="980.40" y="223.5" ></text>
+</g>
+<g >
+<title>encode_mvcomponent (1 samples, 0.12%)</title><rect x="606.4" y="213" width="1.4" height="15.0" fill="rgb(229,84,23)" rx="2" ry="2" />
+<text  x="609.42" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::EnsureEnoughWorkersLockRequired(base::internal::ThreadGroup::BaseScopedWorkersExecutor*) (1 samples, 0.12%)</title><rect x="1138.6" y="453" width="1.5" height="15.0" fill="rgb(231,169,0)" rx="2" ry="2" />
+<text  x="1141.63" y="463.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedThreadLocalOwnedPointer&lt;base::debug::StackTrace&gt;::Set(std::__Cr::unique_ptr&lt;base::debug::StackTrace, std::__Cr::default_delete&lt;base::debug::StackTrace&gt; &gt;) (6 samples, 0.73%)</title><rect x="74.2" y="405" width="8.6" height="15.0" fill="rgb(248,44,23)" rx="2" ry="2" />
+<text  x="77.21" y="415.5" ></text>
+</g>
+<g >
+<title>vp8_denoiser_denoise_mb (38 samples, 4.59%)</title><rect x="292.5" y="181" width="54.2" height="15.0" fill="rgb(251,154,39)" rx="2" ry="2" />
+<text  x="295.52" y="191.5" >vp8_d..</text>
+</g>
+<g >
+<title>vp8_filter_block1d8_v6_ssse3.vp8_filter_block1d8_v6_ssse3_loop (1 samples, 0.12%)</title><rect x="813.3" y="181" width="1.4" height="15.0" fill="rgb(219,228,4)" rx="2" ry="2" />
+<text  x="816.31" y="191.5" ></text>
+</g>
+<g >
+<title>webrtc::VideoStreamEncoder::MaybeEncodeVideoFrame(webrtc::VideoFrame const&amp;, long long) (429 samples, 51.87%)</title><rect x="122.7" y="341" width="612.1" height="15.0" fill="rgb(254,145,10)" rx="2" ry="2" />
+<text  x="125.72" y="351.5" >webrtc::VideoStreamEncoder::MaybeEncodeVideoFrame(webrtc::VideoFrame const&amp;, long lo..</text>
+</g>
+<g >
+<title>webrtc::LibvpxVp8Encoder::GetEncodedPartitions(webrtc::VideoFrame const&amp;, bool) (4 samples, 0.48%)</title><rect x="726.3" y="293" width="5.7" height="15.0" fill="rgb(214,84,2)" rx="2" ry="2" />
+<text  x="729.28" y="303.5" ></text>
+</g>
+<g >
+<title>vpx_codec_decode (147 samples, 17.78%)</title><rect x="776.2" y="277" width="209.8" height="15.0" fill="rgb(205,102,0)" rx="2" ry="2" />
+<text  x="779.22" y="287.5" >vpx_codec_decode</text>
+</g>
+<g >
+<title>webrtc::VideoStreamDecoder::FrameToRender(webrtc::VideoFrame&amp;, absl::optional&lt;unsigned char&gt;, int, webrtc::VideoContentType) (3 samples, 0.36%)</title><rect x="995.9" y="245" width="4.3" height="15.0" fill="rgb(209,90,46)" rx="2" ry="2" />
+<text  x="998.95" y="255.5" ></text>
+</g>
+<g >
+<title>vp8_filter_block1d8_h6_ssse3.filter_block1d8_h6_rowloop_ssse3 (3 samples, 0.36%)</title><rect x="206.9" y="165" width="4.3" height="15.0" fill="rgb(242,72,13)" rx="2" ry="2" />
+<text  x="209.90" y="175.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 0.12%)</title><rect x="704.9" y="213" width="1.4" height="15.0" fill="rgb(218,215,11)" rx="2" ry="2" />
+<text  x="707.87" y="223.5" ></text>
+</g>
+<g >
+<title>CopyRow_ERMS (6 samples, 0.73%)</title><rect x="986.0" y="229" width="8.5" height="15.0" fill="rgb(218,22,11)" rx="2" ry="2" />
+<text  x="988.96" y="239.5" ></text>
+</g>
+<g >
+<title>vp8_loop_filter_vertical_edge_uv_sse2 (1 samples, 0.12%)</title><rect x="968.8" y="197" width="1.5" height="15.0" fill="rgb(241,218,25)" rx="2" ry="2" />
+<text  x="971.84" y="207.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.12%)</title><rect x="997.4" y="85" width="1.4" height="15.0" fill="rgb(245,53,42)" rx="2" ry="2" />
+<text  x="1000.38" y="95.5" ></text>
+</g>
+<g >
+<title>(anonymous namespace)::WebrtcTaskQueue::PostTask(std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;) (1 samples, 0.12%)</title><rect x="729.1" y="229" width="1.5" height="15.0" fill="rgb(247,20,9)" rx="2" ry="2" />
+<text  x="732.13" y="239.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 0.12%)</title><rect x="99.9" y="309" width="1.4" height="15.0" fill="rgb(215,107,7)" rx="2" ry="2" />
+<text  x="102.89" y="319.5" ></text>
+</g>
+</g>
+</svg>

@@ -1,0 +1,621 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="534" onload="init(evt)" viewBox="0 0 1200 534" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="534.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="517" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="517" > </text>
+<g id="frames">
+<g >
+<title>(anonymous namespace)::WebrtcTaskQueue::PostTask(std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;) (13 samples, 25.00%)</title><rect x="849.6" y="213" width="295.0" height="15.0" fill="rgb(220,201,5)" rx="2" ry="2" />
+<text  x="852.62" y="223.5" >(anonymous namespace)::WebrtcTaskQueue:..</text>
+</g>
+<g >
+<title>_pthread_mutex_fairshare_lock_slow (1 samples, 1.92%)</title><rect x="1144.6" y="261" width="22.7" height="15.0" fill="rgb(220,115,8)" rx="2" ry="2" />
+<text  x="1147.62" y="271.5" >_..</text>
+</g>
+<g >
+<title>non-virtual thunk to content::ProcessedLocalAudioSource::Capture(media::AudioBus const*, int, double, bool) (1 samples, 1.92%)</title><rect x="1167.3" y="357" width="22.7" height="15.0" fill="rgb(212,127,43)" rx="2" ry="2" />
+<text  x="1170.31" y="367.5" >n..</text>
+</g>
+<g >
+<title>blink::TrackAudioRenderer::OnData(media::AudioBus const&amp;, base::TimeTicks) (5 samples, 9.62%)</title><rect x="577.3" y="325" width="113.5" height="15.0" fill="rgb(247,207,0)" rx="2" ry="2" />
+<text  x="580.31" y="335.5" >blink::TrackAu..</text>
+</g>
+<g >
+<title>rtc::TaskQueue::PostTask(std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;) (13 samples, 25.00%)</title><rect x="849.6" y="229" width="295.0" height="15.0" fill="rgb(221,14,16)" rx="2" ry="2" />
+<text  x="852.62" y="239.5" >rtc::TaskQueue::PostTask(std::__Cr::uni..</text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 1.92%)</title><rect x="622.7" y="277" width="22.7" height="15.0" fill="rgb(248,118,29)" rx="2" ry="2" />
+<text  x="625.69" y="287.5" >o..</text>
+</g>
+<g >
+<title>base::CancelableSyncSocket::Send(void const*, unsigned long) (11 samples, 21.15%)</title><rect x="10.0" y="373" width="249.6" height="15.0" fill="rgb(237,176,3)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >base::CancelableSyncSocket::Send(..</text>
+</g>
+<g >
+<title>media::AudioPushFifo::Push(media::AudioBus const&amp;) (21 samples, 40.38%)</title><rect x="690.8" y="325" width="476.5" height="15.0" fill="rgb(219,178,9)" rx="2" ry="2" />
+<text  x="693.77" y="335.5" >media::AudioPushFifo::Push(media::AudioBus const&amp;)</text>
+</g>
+<g >
+<title>malloc (1 samples, 1.92%)</title><rect x="622.7" y="261" width="22.7" height="15.0" fill="rgb(226,173,44)" rx="2" ry="2" />
+<text  x="625.69" y="271.5" >m..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.92%)</title><rect x="622.7" y="229" width="22.7" height="15.0" fill="rgb(217,213,23)" rx="2" ry="2" />
+<text  x="625.69" y="239.5" >b..</text>
+</g>
+<g >
+<title>base::ScopedBlockingCall::ScopedBlockingCall(base::Location const&amp;, base::BlockingType) (1 samples, 1.92%)</title><rect x="463.8" y="357" width="22.7" height="15.0" fill="rgb(235,163,44)" rx="2" ry="2" />
+<text  x="466.85" y="367.5" >b..</text>
+</g>
+<g >
+<title>webrtc::internal::AudioSendStream::SendAudioData(std::__Cr::unique_ptr&lt;webrtc::AudioFrame, std::__Cr::default_delete&lt;webrtc::AudioFrame&gt; &gt;) (14 samples, 26.92%)</title><rect x="826.9" y="261" width="317.7" height="15.0" fill="rgb(225,42,43)" rx="2" ry="2" />
+<text  x="829.92" y="271.5" >webrtc::internal::AudioSendStream::SendAud..</text>
+</g>
+<g >
+<title>media::AudioShifter::Push(std::__Cr::unique_ptr&lt;media::AudioBus, std::__Cr::default_delete&lt;media::AudioBus&gt; &gt;, base::TimeTicks) (2 samples, 3.85%)</title><rect x="645.4" y="309" width="45.4" height="15.0" fill="rgb(243,175,20)" rx="2" ry="2" />
+<text  x="648.38" y="319.5" >medi..</text>
+</g>
+<g >
+<title>base::SyncSocket::Receive(void*, unsigned long) (10 samples, 19.23%)</title><rect x="259.6" y="373" width="226.9" height="15.0" fill="rgb(252,75,11)" rx="2" ry="2" />
+<text  x="262.62" y="383.5" >base::SyncSocket::Receive(void..</text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.92%)</title><rect x="622.7" y="197" width="22.7" height="15.0" fill="rgb(208,23,19)" rx="2" ry="2" />
+<text  x="625.69" y="207.5" >s..</text>
+</g>
+<g >
+<title>base::(anonymous namespace)::SendHelper(int, void const*, unsigned long) (6 samples, 11.54%)</title><rect x="10.0" y="357" width="136.2" height="15.0" fill="rgb(246,120,33)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >base::(anonymous ..</text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 1.92%)</title><rect x="622.7" y="245" width="22.7" height="15.0" fill="rgb(218,146,45)" rx="2" ry="2" />
+<text  x="625.69" y="255.5" >m..</text>
+</g>
+<g >
+<title>base::(anonymous namespace)::ThreadFunc(void*) (52 samples, 100.00%)</title><rect x="10.0" y="405" width="1180.0" height="15.0" fill="rgb(239,180,11)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >base::(anonymous namespace)::ThreadFunc(void*)</text>
+</g>
+<g >
+<title>void base::internal::ThreadGroupImpl::ScopedWorkersExecutor::WorkerContainer::ForEachWorker&lt;base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)&gt;(base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)) (5 samples, 9.62%)</title><rect x="1031.2" y="101" width="113.4" height="15.0" fill="rgb(207,146,25)" rx="2" ry="2" />
+<text  x="1034.15" y="111.5" >void base::int..</text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::PushTaskSourceAndWakeUpWorkers(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (8 samples, 15.38%)</title><rect x="963.1" y="133" width="181.5" height="15.0" fill="rgb(219,173,2)" rx="2" ry="2" />
+<text  x="966.08" y="143.5" >base::internal::ThreadG..</text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.92%)</title><rect x="622.7" y="181" width="22.7" height="15.0" fill="rgb(205,186,46)" rx="2" ry="2" />
+<text  x="625.69" y="191.5" >t..</text>
+</g>
+<g >
+<title>media::AudioBus::BuildChannelData(int, int, float*) (1 samples, 1.92%)</title><rect x="622.7" y="293" width="22.7" height="15.0" fill="rgb(230,193,14)" rx="2" ry="2" />
+<text  x="625.69" y="303.5" >m..</text>
+</g>
+<g >
+<title>__fcntl (5 samples, 9.62%)</title><rect x="146.2" y="341" width="113.4" height="15.0" fill="rgb(218,52,37)" rx="2" ry="2" />
+<text  x="149.15" y="351.5" >__fcntl</text>
+</g>
+<g >
+<title>base::internal::WorkerThread::WakeUp() (5 samples, 9.62%)</title><rect x="1031.2" y="85" width="113.4" height="15.0" fill="rgb(220,80,16)" rx="2" ry="2" />
+<text  x="1034.15" y="95.5" >base::internal..</text>
+</g>
+<g >
+<title>media::AudioInputDevice::AudioThreadCallback::Process(unsigned int) (31 samples, 59.62%)</title><rect x="486.5" y="373" width="703.5" height="15.0" fill="rgb(250,105,52)" rx="2" ry="2" />
+<text  x="489.54" y="383.5" >media::AudioInputDevice::AudioThreadCallback::Process(unsigned int)</text>
+</g>
+<g >
+<title>_pthread_start (52 samples, 100.00%)</title><rect x="10.0" y="437" width="1180.0" height="15.0" fill="rgb(249,86,18)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >_pthread_start</text>
+</g>
+<g >
+<title>media::AudioDeviceThread::ThreadMain  0x6593b8 (52 samples, 100.00%)</title><rect x="10.0" y="469" width="1180.0" height="15.0" fill="rgb(224,128,50)" rx="2" ry="2" />
+<text  x="13.00" y="479.5" >media::AudioDeviceThread::ThreadMain  0x6593b8</text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequenceNow(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (10 samples, 19.23%)</title><rect x="917.7" y="149" width="226.9" height="15.0" fill="rgb(232,37,8)" rx="2" ry="2" />
+<text  x="920.69" y="159.5" >base::internal::ThreadPoolImpl..</text>
+</g>
+<g >
+<title>blink::MediaStreamAudioDeliverer&lt;blink::WebMediaStreamAudioSink&gt;::OnData(media::AudioBus const&amp;, base::TimeTicks) (28 samples, 53.85%)</title><rect x="531.9" y="341" width="635.4" height="15.0" fill="rgb(235,0,12)" rx="2" ry="2" />
+<text  x="534.92" y="351.5" >blink::MediaStreamAudioDeliverer&lt;blink::WebMediaStreamAudioSink&gt;::OnData(media::AudioBu..</text>
+</g>
+<g >
+<title>malloc_zone_memalign (1 samples, 1.92%)</title><rect x="600.0" y="245" width="22.7" height="15.0" fill="rgb(243,200,25)" rx="2" ry="2" />
+<text  x="603.00" y="255.5" >m..</text>
+</g>
+<g >
+<title>media::AudioBus::Create(int, int) (3 samples, 5.77%)</title><rect x="577.3" y="309" width="68.1" height="15.0" fill="rgb(217,198,37)" rx="2" ry="2" />
+<text  x="580.31" y="319.5" >media::..</text>
+</g>
+<g >
+<title>media::AudioDeviceThread::ThreadMain() (52 samples, 100.00%)</title><rect x="10.0" y="389" width="1180.0" height="15.0" fill="rgb(248,212,46)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >media::AudioDeviceThread::ThreadMain()</text>
+</g>
+<g >
+<title>cricket::WebRtcVoiceMediaChannel::WebRtcAudioSendStream::OnData(void const*, int, int, unsigned long, unsigned long) (14 samples, 26.92%)</title><rect x="826.9" y="277" width="317.7" height="15.0" fill="rgb(205,85,12)" rx="2" ry="2" />
+<text  x="829.92" y="287.5" >cricket::WebRtcVoiceMediaChannel::WebRtcAu..</text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::EnsureEnoughWorkersLockRequired(base::internal::ThreadGroup::BaseScopedWorkersExecutor*) (1 samples, 1.92%)</title><rect x="985.8" y="101" width="22.7" height="15.0" fill="rgb(247,140,0)" rx="2" ry="2" />
+<text  x="988.77" y="111.5" >b..</text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::AssertNoLockHeldOnCurrentThread() (1 samples, 1.92%)</title><rect x="1008.5" y="101" width="22.7" height="15.0" fill="rgb(208,75,17)" rx="2" ry="2" />
+<text  x="1011.46" y="111.5" >b..</text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (11 samples, 21.15%)</title><rect x="895.0" y="197" width="249.6" height="15.0" fill="rgb(210,107,5)" rx="2" ry="2" />
+<text  x="898.00" y="207.5" >base::TaskRunner::PostTask(base::..</text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 1.92%)</title><rect x="826.9" y="245" width="22.7" height="15.0" fill="rgb(246,26,34)" rx="2" ry="2" />
+<text  x="829.92" y="255.5" >p..</text>
+</g>
+<g >
+<title>_pthread_body (52 samples, 100.00%)</title><rect x="10.0" y="421" width="1180.0" height="15.0" fill="rgb(250,151,18)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >_pthread_body</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 1.92%)</title><rect x="1008.5" y="85" width="22.7" height="15.0" fill="rgb(250,179,8)" rx="2" ry="2" />
+<text  x="1011.46" y="95.5" >b..</text>
+</g>
+<g >
+<title>thread_start (52 samples, 100.00%)</title><rect x="10.0" y="453" width="1180.0" height="15.0" fill="rgb(247,155,41)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" >thread_start</text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (4 samples, 7.69%)</title><rect x="1053.8" y="69" width="90.8" height="15.0" fill="rgb(211,24,40)" rx="2" ry="2" />
+<text  x="1056.85" y="79.5" >base::Wait..</text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequence(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (10 samples, 19.23%)</title><rect x="917.7" y="165" width="226.9" height="15.0" fill="rgb(236,68,6)" rx="2" ry="2" />
+<text  x="920.69" y="175.5" >base::internal::ThreadPoolImpl..</text>
+</g>
+<g >
+<title>base::ReadFromFD(int, char*, unsigned long) (9 samples, 17.31%)</title><rect x="259.6" y="357" width="204.2" height="15.0" fill="rgb(251,99,21)" rx="2" ry="2" />
+<text  x="262.62" y="367.5" >base::ReadFromFD(int, char..</text>
+</g>
+<g >
+<title>std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;* logging::CheckNEImpl&lt;(anonymous namespace)::TlsVectorEntry*, void*&gt;((anonymous namespace)::TlsVectorEntry* const&amp;, void* const&amp;, char const*) (1 samples, 1.92%)</title><rect x="1008.5" y="69" width="22.7" height="15.0" fill="rgb(243,210,47)" rx="2" ry="2" />
+<text  x="1011.46" y="79.5" >s..</text>
+</g>
+<g >
+<title>webrtc::voe::(anonymous namespace)::ChannelSend::ProcessAndEncodeAudio(std::__Cr::unique_ptr&lt;webrtc::AudioFrame, std::__Cr::default_delete&lt;webrtc::AudioFrame&gt; &gt;) (13 samples, 25.00%)</title><rect x="849.6" y="245" width="295.0" height="15.0" fill="rgb(243,137,12)" rx="2" ry="2" />
+<text  x="852.62" y="255.5" >webrtc::voe::(anonymous namespace)::Cha..</text>
+</g>
+<g >
+<title>fcntl (5 samples, 9.62%)</title><rect x="146.2" y="357" width="113.4" height="15.0" fill="rgb(215,20,38)" rx="2" ry="2" />
+<text  x="149.15" y="367.5" >fcntl</text>
+</g>
+<g >
+<title>rtc::CriticalSection::Enter() const (1 samples, 1.92%)</title><rect x="1144.6" y="277" width="22.7" height="15.0" fill="rgb(208,43,6)" rx="2" ry="2" />
+<text  x="1147.62" y="287.5" >r..</text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Release() (1 samples, 1.92%)</title><rect x="963.1" y="101" width="22.7" height="15.0" fill="rgb(212,3,8)" rx="2" ry="2" />
+<text  x="966.08" y="111.5" >b..</text>
+</g>
+<g >
+<title>base::WriteFileDescriptor(int, char const*, int) (6 samples, 11.54%)</title><rect x="10.0" y="341" width="136.2" height="15.0" fill="rgb(237,118,19)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" >base::WriteFileDe..</text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::ScopedWorkersExecutor::~ScopedWorkersExecutor() (6 samples, 11.54%)</title><rect x="1008.5" y="117" width="136.1" height="15.0" fill="rgb(222,121,47)" rx="2" ry="2" />
+<text  x="1011.46" y="127.5" >base::internal::T..</text>
+</g>
+<g >
+<title>base::AlignedAlloc(unsigned long, unsigned long) (2 samples, 3.85%)</title><rect x="577.3" y="277" width="45.4" height="15.0" fill="rgb(251,57,9)" rx="2" ry="2" />
+<text  x="580.31" y="287.5" >base..</text>
+</g>
+<g >
+<title>base::internal::UncheckedScopedBlockingCall::UncheckedScopedBlockingCall(base::BlockingType) (1 samples, 1.92%)</title><rect x="463.8" y="341" width="22.7" height="15.0" fill="rgb(219,36,24)" rx="2" ry="2" />
+<text  x="466.85" y="351.5" >b..</text>
+</g>
+<g >
+<title>base::Location::CreateFromHere(char const*, char const*, int) (1 samples, 1.92%)</title><rect x="872.3" y="197" width="22.7" height="15.0" fill="rgb(233,14,6)" rx="2" ry="2" />
+<text  x="875.31" y="207.5" >b..</text>
+</g>
+<g >
+<title>read (8 samples, 15.38%)</title><rect x="282.3" y="341" width="181.5" height="15.0" fill="rgb(236,1,16)" rx="2" ry="2" />
+<text  x="285.31" y="351.5" >read</text>
+</g>
+<g >
+<title>tiny_malloc_from_free_list (1 samples, 1.92%)</title><rect x="622.7" y="165" width="22.7" height="15.0" fill="rgb(210,60,52)" rx="2" ry="2" />
+<text  x="625.69" y="175.5" >t..</text>
+</g>
+<g >
+<title>base::internal::ThreadGroup::PushTaskSourceAndWakeUpWorkersImpl(base::internal::ThreadGroup::BaseScopedWorkersExecutor*, base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (2 samples, 3.85%)</title><rect x="963.1" y="117" width="45.4" height="15.0" fill="rgb(217,213,36)" rx="2" ry="2" />
+<text  x="966.08" y="127.5" >base..</text>
+</g>
+<g >
+<title>content::WebRtcAudioSink::DeliverRebufferedAudio(media::AudioBus const&amp;, int) (19 samples, 36.54%)</title><rect x="736.2" y="309" width="431.1" height="15.0" fill="rgb(238,218,10)" rx="2" ry="2" />
+<text  x="739.15" y="319.5" >content::WebRtcAudioSink::DeliverRebufferedAudio(media::Au..</text>
+</g>
+<g >
+<title>posix_memalign (2 samples, 3.85%)</title><rect x="577.3" y="261" width="45.4" height="15.0" fill="rgb(216,179,1)" rx="2" ry="2" />
+<text  x="580.31" y="271.5" >posi..</text>
+</g>
+<g >
+<title>blink::MediaStreamAudioDeliverer&lt;blink::MediaStreamAudioTrack&gt;::OnData(media::AudioBus const&amp;, base::TimeTicks) (28 samples, 53.85%)</title><rect x="531.9" y="357" width="635.4" height="15.0" fill="rgb(251,179,10)" rx="2" ry="2" />
+<text  x="534.92" y="367.5" >blink::MediaStreamAudioDeliverer&lt;blink::MediaStreamAudioTrack&gt;::OnData(media::AudioBus ..</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Set(void*) (1 samples, 1.92%)</title><rect x="463.8" y="325" width="22.7" height="15.0" fill="rgb(222,121,54)" rx="2" ry="2" />
+<text  x="466.85" y="335.5" >b..</text>
+</g>
+<g >
+<title>mach_msg_trap (4 samples, 7.69%)</title><rect x="1053.8" y="37" width="90.8" height="15.0" fill="rgb(220,32,51)" rx="2" ry="2" />
+<text  x="1056.85" y="47.5" >mach_msg_t..</text>
+</g>
+<g >
+<title>all (52 samples, 100%)</title><rect x="10.0" y="485" width="1180.0" height="15.0" fill="rgb(221,54,33)" rx="2" ry="2" />
+<text  x="13.00" y="495.5" ></text>
+</g>
+<g >
+<title>media::AudioBus::AudioBus(int, int) (2 samples, 3.85%)</title><rect x="577.3" y="293" width="45.4" height="15.0" fill="rgb(244,115,50)" rx="2" ry="2" />
+<text  x="580.31" y="303.5" >medi..</text>
+</g>
+<g >
+<title>base::internal::PooledSequencedTaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (10 samples, 19.23%)</title><rect x="917.7" y="181" width="226.9" height="15.0" fill="rgb(219,208,20)" rx="2" ry="2" />
+<text  x="920.69" y="191.5" >base::internal::PooledSequence..</text>
+</g>
+<g >
+<title>webrtc::LocalAudioSinkAdapter::OnData(void const*, int, int, unsigned long, unsigned long) (15 samples, 28.85%)</title><rect x="826.9" y="293" width="340.4" height="15.0" fill="rgb(205,199,53)" rx="2" ry="2" />
+<text  x="829.92" y="303.5" >webrtc::LocalAudioSinkAdapter::OnData(void con..</text>
+</g>
+<g >
+<title>DYLD-STUB$$media::AudioShifter::Push(std::__Cr::unique_ptr&lt;media::AudioBus, std::__Cr::default_delete&lt;media::AudioBus&gt; &gt;, base::TimeTicks) (1 samples, 1.92%)</title><rect x="554.6" y="325" width="22.7" height="15.0" fill="rgb(241,143,13)" rx="2" ry="2" />
+<text  x="557.62" y="335.5" >D..</text>
+</g>
+<g >
+<title>mach_msg (4 samples, 7.69%)</title><rect x="1053.8" y="53" width="90.8" height="15.0" fill="rgb(224,107,53)" rx="2" ry="2" />
+<text  x="1056.85" y="63.5" >mach_msg</text>
+</g>
+<g >
+<title>write (6 samples, 11.54%)</title><rect x="10.0" y="325" width="136.2" height="15.0" fill="rgb(223,1,44)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >write</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.92%)</title><rect x="622.7" y="213" width="22.7" height="15.0" fill="rgb(217,121,17)" rx="2" ry="2" />
+<text  x="625.69" y="223.5" >b..</text>
+</g>
+</g>
+</svg>

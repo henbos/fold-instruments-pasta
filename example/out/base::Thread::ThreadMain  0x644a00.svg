@@ -1,0 +1,901 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="502" onload="init(evt)" viewBox="0 0 1200 502" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="502.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="485" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="485" > </text>
+<g id="frames">
+<g >
+<title>pthread_mutex_unlock (1 samples, 1.45%)</title><rect x="899.3" y="69" width="17.1" height="15.0" fill="rgb(219,205,23)" rx="2" ry="2" />
+<text  x="902.28" y="79.5" ></text>
+</g>
+<g >
+<title>void std::__Cr::vector&lt;base::internal::DelayedTaskManager::DelayedTask, std::__Cr::allocator&lt;base::internal::DelayedTaskManager::DelayedTask&gt; &gt;::__push_back_slow_path&lt;base::internal::DelayedTaskManager::DelayedTask&gt;(base::internal::DelayedTaskManager::DelayedTask&amp;&amp;) (2 samples, 2.90%)</title><rect x="813.8" y="197" width="34.2" height="15.0" fill="rgb(250,70,43)" rx="2" ry="2" />
+<text  x="816.77" y="207.5" >vo..</text>
+</g>
+<g >
+<title>operator new(unsigned long) (2 samples, 2.90%)</title><rect x="813.8" y="181" width="34.2" height="15.0" fill="rgb(207,206,10)" rx="2" ry="2" />
+<text  x="816.77" y="191.5" >op..</text>
+</g>
+<g >
+<title>base::sequence_manager::TimeDomain::SetNextWakeUpForQueue(base::sequence_manager::internal::TaskQueueImpl*, base::Optional&lt;base::sequence_manager::internal::DelayedWakeUp&gt;, base::sequence_manager::internal::WakeUpResolution, base::sequence_manager::LazyNow*) (1 samples, 1.45%)</title><rect x="984.8" y="117" width="17.1" height="15.0" fill="rgb(206,43,2)" rx="2" ry="2" />
+<text  x="987.78" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueueSets::OnTaskPushedToEmptyQueue(base::sequence_manager::internal::WorkQueue*) (1 samples, 1.45%)</title><rect x="1036.1" y="133" width="17.1" height="15.0" fill="rgb(252,0,11)" rx="2" ry="2" />
+<text  x="1039.09" y="143.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.45%)</title><rect x="813.8" y="117" width="17.1" height="15.0" fill="rgb(206,186,32)" rx="2" ry="2" />
+<text  x="816.77" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::ScheduleDelayedWorkTask(base::sequence_manager::Task) (1 samples, 1.45%)</title><rect x="848.0" y="197" width="17.1" height="15.0" fill="rgb(233,93,28)" rx="2" ry="2" />
+<text  x="850.97" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThreadStack::Pop() (2 samples, 2.90%)</title><rect x="591.4" y="117" width="34.3" height="15.0" fill="rgb(253,176,19)" rx="2" ry="2" />
+<text  x="594.45" y="127.5" >ba..</text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.45%)</title><rect x="813.8" y="85" width="17.1" height="15.0" fill="rgb(231,43,16)" rx="2" ry="2" />
+<text  x="816.77" y="95.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 1.45%)</title><rect x="1019.0" y="101" width="17.1" height="15.0" fill="rgb(250,97,2)" rx="2" ry="2" />
+<text  x="1021.99" y="111.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroup::PushTaskSourceAndWakeUpWorkersImpl(base::internal::ThreadGroup::BaseScopedWorkersExecutor*, base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (2 samples, 2.90%)</title><rect x="591.4" y="149" width="34.3" height="15.0" fill="rgb(208,22,25)" rx="2" ry="2" />
+<text  x="594.45" y="159.5" >ba..</text>
+</g>
+<g >
+<title>base::internal::DelayedTaskManager::ProcessRipeTasks() (28 samples, 40.58%)</title><rect x="369.1" y="213" width="478.9" height="15.0" fill="rgb(223,79,9)" rx="2" ry="2" />
+<text  x="372.13" y="223.5" >base::internal::DelayedTaskManager::ProcessRipeTasks()</text>
+</g>
+<g >
+<title>mach_absolute_time (1 samples, 1.45%)</title><rect x="420.4" y="165" width="17.1" height="15.0" fill="rgb(222,174,31)" rx="2" ry="2" />
+<text  x="423.43" y="175.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::MoveReadyDelayedTasksToWorkQueues(base::sequence_manager::LazyNow*) (7 samples, 10.14%)</title><rect x="933.5" y="181" width="119.7" height="15.0" fill="rgb(240,52,43)" rx="2" ry="2" />
+<text  x="936.48" y="191.5" >base::sequence..</text>
+</g>
+<g >
+<title>kevent64 (12 samples, 17.39%)</title><rect x="44.2" y="245" width="205.2" height="15.0" fill="rgb(245,127,34)" rx="2" ry="2" />
+<text  x="47.20" y="255.5" >kevent64</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 1.45%)</title><rect x="454.6" y="117" width="17.1" height="15.0" fill="rgb(205,126,33)" rx="2" ry="2" />
+<text  x="457.64" y="127.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 1.45%)</title><rect x="848.0" y="117" width="17.1" height="15.0" fill="rgb(250,211,18)" rx="2" ry="2" />
+<text  x="850.97" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() const (1 samples, 1.45%)</title><rect x="1104.5" y="165" width="17.1" height="15.0" fill="rgb(225,213,35)" rx="2" ry="2" />
+<text  x="1107.49" y="175.5" ></text>
+</g>
+<g >
+<title>non-virtual thunk to base::sequence_manager::internal::SequenceManagerImpl::TakeTask() (15 samples, 21.74%)</title><rect x="882.2" y="229" width="256.5" height="15.0" fill="rgb(227,172,20)" rx="2" ry="2" />
+<text  x="885.17" y="239.5" >non-virtual thunk to base::sequenc..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.45%)</title><rect x="505.9" y="101" width="17.1" height="15.0" fill="rgb(248,83,1)" rx="2" ry="2" />
+<text  x="508.94" y="111.5" ></text>
+</g>
+<g >
+<title>mach_absolute_time (1 samples, 1.45%)</title><rect x="933.5" y="117" width="17.1" height="15.0" fill="rgb(225,2,37)" rx="2" ry="2" />
+<text  x="936.48" y="127.5" ></text>
+</g>
+<g >
+<title>base::internal::Sequence::BeginTransaction() (1 samples, 1.45%)</title><rect x="540.1" y="165" width="17.1" height="15.0" fill="rgb(238,92,23)" rx="2" ry="2" />
+<text  x="543.14" y="175.5" ></text>
+</g>
+<g >
+<title>base::subtle::TimeTicksNowIgnoringOverride() (1 samples, 1.45%)</title><rect x="933.5" y="133" width="17.1" height="15.0" fill="rgb(219,164,3)" rx="2" ry="2" />
+<text  x="936.48" y="143.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.45%)</title><rect x="1104.5" y="149" width="17.1" height="15.0" fill="rgb(237,53,52)" rx="2" ry="2" />
+<text  x="1107.49" y="159.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::EnsureEnoughWorkersLockRequired(base::internal::ThreadGroup::BaseScopedWorkersExecutor*) (2 samples, 2.90%)</title><rect x="591.4" y="133" width="34.3" height="15.0" fill="rgb(226,36,27)" rx="2" ry="2" />
+<text  x="594.45" y="143.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::TakeTaskImpl() (15 samples, 21.74%)</title><rect x="882.2" y="197" width="256.5" height="15.0" fill="rgb(252,144,34)" rx="2" ry="2" />
+<text  x="885.17" y="207.5" >base::sequence_manager::internal::..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.45%)</title><rect x="1019.0" y="117" width="17.1" height="15.0" fill="rgb(214,116,21)" rx="2" ry="2" />
+<text  x="1021.99" y="127.5" ></text>
+</g>
+<g >
+<title>free_tiny (1 samples, 1.45%)</title><rect x="796.7" y="197" width="17.1" height="15.0" fill="rgb(240,109,13)" rx="2" ry="2" />
+<text  x="799.67" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::TakeTask() (15 samples, 21.74%)</title><rect x="882.2" y="213" width="256.5" height="15.0" fill="rgb(225,41,34)" rx="2" ry="2" />
+<text  x="885.17" y="223.5" >base::sequence_manager::internal::..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::Validate() (1 samples, 1.45%)</title><rect x="1070.3" y="181" width="17.1" height="15.0" fill="rgb(222,200,4)" rx="2" ry="2" />
+<text  x="1073.29" y="191.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::SetNextDelayedDoWork(base::sequence_manager::LazyNow*, base::TimeTicks) (1 samples, 1.45%)</title><rect x="984.8" y="101" width="17.1" height="15.0" fill="rgb(227,22,9)" rx="2" ry="2" />
+<text  x="987.78" y="111.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::ScopedWorkersExecutor::~ScopedWorkersExecutor() (7 samples, 10.14%)</title><rect x="625.7" y="149" width="119.7" height="15.0" fill="rgb(248,54,50)" rx="2" ry="2" />
+<text  x="628.65" y="159.5" >base::internal..</text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequenceNow(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (12 samples, 17.39%)</title><rect x="540.1" y="181" width="205.3" height="15.0" fill="rgb(216,172,9)" rx="2" ry="2" />
+<text  x="543.14" y="191.5" >base::internal::ThreadPool..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::NotifyWillProcessTask(base::sequence_manager::internal::SequenceManagerImpl::ExecutingTask*, base::sequence_manager::LazyNow*) (1 samples, 1.45%)</title><rect x="1053.2" y="181" width="17.1" height="15.0" fill="rgb(241,24,30)" rx="2" ry="2" />
+<text  x="1056.19" y="191.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 1.45%)</title><rect x="1155.8" y="213" width="17.1" height="15.0" fill="rgb(211,146,38)" rx="2" ry="2" />
+<text  x="1158.80" y="223.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.45%)</title><rect x="848.0" y="133" width="17.1" height="15.0" fill="rgb(226,57,10)" rx="2" ry="2" />
+<text  x="850.97" y="143.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::UpdateCrossThreadQueueStateLocked() (1 samples, 1.45%)</title><rect x="899.3" y="117" width="17.1" height="15.0" fill="rgb(225,167,52)" rx="2" ry="2" />
+<text  x="902.28" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::RequiresTaskTiming() const (1 samples, 1.45%)</title><rect x="1104.5" y="181" width="17.1" height="15.0" fill="rgb(213,190,25)" rx="2" ry="2" />
+<text  x="1107.49" y="191.5" ></text>
+</g>
+<g >
+<title>_pthread_body (69 samples, 100.00%)</title><rect x="10.0" y="389" width="1180.0" height="15.0" fill="rgb(219,114,35)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >_pthread_body</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() const (1 samples, 1.45%)</title><rect x="488.8" y="69" width="17.1" height="15.0" fill="rgb(207,224,27)" rx="2" ry="2" />
+<text  x="491.84" y="79.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoSomeWork() (54 samples, 78.26%)</title><rect x="249.4" y="261" width="923.5" height="15.0" fill="rgb(233,73,21)" rx="2" ry="2" />
+<text  x="252.42" y="271.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoSomeWork()</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.45%)</title><rect x="882.2" y="165" width="17.1" height="15.0" fill="rgb(209,72,7)" rx="2" ry="2" />
+<text  x="885.17" y="175.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (1 samples, 1.45%)</title><rect x="540.1" y="149" width="17.1" height="15.0" fill="rgb(244,178,47)" rx="2" ry="2" />
+<text  x="543.14" y="159.5" ></text>
+</g>
+<g >
+<title>base::TaskAnnotator::RunTask(char const*, base::PendingTask*) (30 samples, 43.48%)</title><rect x="352.0" y="229" width="513.1" height="15.0" fill="rgb(233,38,50)" rx="2" ry="2" />
+<text  x="355.03" y="239.5" >base::TaskAnnotator::RunTask(char const*, base::PendingTask*)</text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.45%)</title><rect x="813.8" y="101" width="17.1" height="15.0" fill="rgb(236,164,43)" rx="2" ry="2" />
+<text  x="816.77" y="111.5" ></text>
+</g>
+<g >
+<title>malloc (2 samples, 2.90%)</title><rect x="813.8" y="165" width="34.2" height="15.0" fill="rgb(252,212,44)" rx="2" ry="2" />
+<text  x="816.77" y="175.5" >ma..</text>
+</g>
+<g >
+<title>thread_start (69 samples, 100.00%)</title><rect x="10.0" y="421" width="1180.0" height="15.0" fill="rgb(227,158,47)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >thread_start</text>
+</g>
+<g >
+<title>DYLD-STUB$$pthread_self (1 samples, 1.45%)</title><rect x="488.8" y="37" width="17.1" height="15.0" fill="rgb(229,52,43)" rx="2" ry="2" />
+<text  x="491.84" y="47.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (7 samples, 10.14%)</title><rect x="625.7" y="69" width="119.7" height="15.0" fill="rgb(227,206,27)" rx="2" ry="2" />
+<text  x="628.65" y="79.5" >mach_msg_trap</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueueSets::OnQueuesFrontTaskChanged(base::sequence_manager::internal::WorkQueue*) (1 samples, 1.45%)</title><rect x="1121.6" y="165" width="17.1" height="15.0" fill="rgb(218,170,39)" rx="2" ry="2" />
+<text  x="1124.59" y="175.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 1.45%)</title><rect x="1104.5" y="133" width="17.1" height="15.0" fill="rgb(250,90,3)" rx="2" ry="2" />
+<text  x="1107.49" y="143.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::TimeDomain::SetNextWakeUpForQueue(base::sequence_manager::internal::TaskQueueImpl*, base::Optional&lt;base::sequence_manager::internal::DelayedWakeUp&gt;, base::sequence_manager::internal::WakeUpResolution, base::sequence_manager::LazyNow*) (1 samples, 1.45%)</title><rect x="488.8" y="85" width="17.1" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="491.84" y="95.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (2 samples, 2.90%)</title><rect x="591.4" y="85" width="34.3" height="15.0" fill="rgb(222,150,46)" rx="2" ry="2" />
+<text  x="594.45" y="95.5" >ba..</text>
+</g>
+<g >
+<title>base::RunLoop::RunWithTimeout(base::TimeDelta) (69 samples, 100.00%)</title><rect x="10.0" y="309" width="1180.0" height="15.0" fill="rgb(233,143,19)" rx="2" ry="2" />
+<text  x="13.00" y="319.5" >base::RunLoop::RunWithTimeout(base::TimeDelta)</text>
+</g>
+<g >
+<title>base::internal::IntrusiveHeap&lt;base::sequence_manager::internal::WorkQueueSets::OldestTaskEnqueueOrder&gt;::MoveHoleUpAndFillWithElement(unsigned long, base::sequence_manager::internal::WorkQueueSets::OldestTaskEnqueueOrder&amp;&amp;) (1 samples, 1.45%)</title><rect x="1036.1" y="117" width="17.1" height="15.0" fill="rgb(253,95,52)" rx="2" ry="2" />
+<text  x="1039.09" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PushOntoDelayedIncomingQueueFromMainThread(base::sequence_manager::Task, base::TimeTicks, bool) (1 samples, 1.45%)</title><rect x="848.0" y="181" width="17.1" height="15.0" fill="rgb(248,91,52)" rx="2" ry="2" />
+<text  x="850.97" y="191.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueSelector::WorkQueueSetBecameEmpty(unsigned long) (1 samples, 1.45%)</title><rect x="1121.6" y="149" width="17.1" height="15.0" fill="rgb(229,210,2)" rx="2" ry="2" />
+<text  x="1124.59" y="159.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.45%)</title><rect x="1087.4" y="165" width="17.1" height="15.0" fill="rgb(229,190,51)" rx="2" ry="2" />
+<text  x="1090.39" y="175.5" ></text>
+</g>
+<g >
+<title>_pthread_start (69 samples, 100.00%)</title><rect x="10.0" y="405" width="1180.0" height="15.0" fill="rgb(216,65,19)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >_pthread_start</text>
+</g>
+<g >
+<title>base::ObserverList&lt;base::TaskObserver, false, true, base::internal::UncheckedObserverAdapter&gt;::Iter::~Iter() (1 samples, 1.45%)</title><rect x="1053.2" y="165" width="17.1" height="15.0" fill="rgb(249,100,17)" rx="2" ry="2" />
+<text  x="1056.19" y="175.5" ></text>
+</g>
+<g >
+<title>tiny_size (1 samples, 1.45%)</title><rect x="779.6" y="181" width="17.1" height="15.0" fill="rgb(207,49,38)" rx="2" ry="2" />
+<text  x="782.57" y="191.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::TimeDomain::MoveReadyDelayedTasksToWorkQueues(base::sequence_manager::LazyNow*) (7 samples, 10.14%)</title><rect x="933.5" y="165" width="119.7" height="15.0" fill="rgb(245,173,53)" rx="2" ry="2" />
+<text  x="936.48" y="175.5" >base::sequence..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostTask(base::sequence_manager::internal::PostedTask) (4 samples, 5.80%)</title><rect x="471.7" y="149" width="68.4" height="15.0" fill="rgb(221,171,22)" rx="2" ry="2" />
+<text  x="474.74" y="159.5" >base::s..</text>
+</g>
+<g >
+<title>base::subtle::TimeTicksNowIgnoringOverride() (1 samples, 1.45%)</title><rect x="523.0" y="117" width="17.1" height="15.0" fill="rgb(230,150,50)" rx="2" ry="2" />
+<text  x="526.04" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueue::TakeTaskFromWorkQueue() (1 samples, 1.45%)</title><rect x="1121.6" y="181" width="17.1" height="15.0" fill="rgb(217,209,0)" rx="2" ry="2" />
+<text  x="1124.59" y="191.5" ></text>
+</g>
+<g >
+<title>objc_msgSend (1 samples, 1.45%)</title><rect x="1172.9" y="277" width="17.1" height="15.0" fill="rgb(252,104,44)" rx="2" ry="2" />
+<text  x="1175.90" y="287.5" ></text>
+</g>
+<g >
+<title>non-virtual thunk to base::sequence_manager::internal::SequenceManagerImpl::DidRunTask() (1 samples, 1.45%)</title><rect x="865.1" y="229" width="17.1" height="15.0" fill="rgb(241,140,40)" rx="2" ry="2" />
+<text  x="868.07" y="239.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (1 samples, 1.45%)</title><rect x="899.3" y="101" width="17.1" height="15.0" fill="rgb(209,139,28)" rx="2" ry="2" />
+<text  x="902.28" y="111.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.45%)</title><rect x="488.8" y="53" width="17.1" height="15.0" fill="rgb(224,144,26)" rx="2" ry="2" />
+<text  x="491.84" y="63.5" ></text>
+</g>
+<g >
+<title>base::Thread::ThreadMain() (69 samples, 100.00%)</title><rect x="10.0" y="357" width="1180.0" height="15.0" fill="rgb(230,154,17)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >base::Thread::ThreadMain()</text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (1 samples, 1.45%)</title><rect x="403.3" y="197" width="17.1" height="15.0" fill="rgb(213,94,0)" rx="2" ry="2" />
+<text  x="406.33" y="207.5" ></text>
+</g>
+<g >
+<title>free (1 samples, 1.45%)</title><rect x="352.0" y="197" width="17.1" height="15.0" fill="rgb(251,92,28)" rx="2" ry="2" />
+<text  x="355.03" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueSelector::SmallPriorityQueue::erase(base::sequence_manager::TaskQueue::QueuePriority) (1 samples, 1.45%)</title><rect x="1121.6" y="133" width="17.1" height="15.0" fill="rgb(234,114,0)" rx="2" ry="2" />
+<text  x="1124.59" y="143.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;base::internal::ThreadPoolImpl::PostTaskWithSequence(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;)::$_0, scoped_refptr&lt;base::internal::Sequence&gt;, base::internal::UnretainedWrapper&lt;base::internal::ThreadPoolImpl&gt; &gt;, void (base::internal::Task)&gt;::RunOnce(base::internal::BindStateBase*, base::internal::Task&amp;&amp;) (12 samples, 17.39%)</title><rect x="540.1" y="197" width="205.3" height="15.0" fill="rgb(242,9,50)" rx="2" ry="2" />
+<text  x="543.14" y="207.5" >base::internal::Invoker&lt;ba..</text>
+</g>
+<g >
+<title>base::internal::TaskTracker::BeforeQueueTaskSource(base::TaskShutdownBehavior) (2 samples, 2.90%)</title><rect x="557.2" y="149" width="34.2" height="15.0" fill="rgb(235,6,2)" rx="2" ry="2" />
+<text  x="560.25" y="159.5" >ba..</text>
+</g>
+<g >
+<title>malloc_zone_malloc (2 samples, 2.90%)</title><rect x="813.8" y="149" width="34.2" height="15.0" fill="rgb(207,30,23)" rx="2" ry="2" />
+<text  x="816.77" y="159.5" >ma..</text>
+</g>
+<g >
+<title>base::MessagePumpKqueue::DoInternalWork(base::MessagePump::Delegate::NextWorkInfo*) (14 samples, 20.29%)</title><rect x="10.0" y="261" width="239.4" height="15.0" fill="rgb(247,156,2)" rx="2" ry="2" />
+<text  x="13.00" y="271.5" >base::MessagePumpKqueue::DoInte..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoWorkImpl(base::sequence_manager::LazyNow*, bool*) (51 samples, 73.91%)</title><rect x="266.5" y="245" width="872.2" height="15.0" fill="rgb(209,87,45)" rx="2" ry="2" />
+<text  x="269.52" y="255.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoWorkImpl(base::sequence_manager::LazyNow*, bool*)</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TakeImmediateIncomingQueueTasks(base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;*) (1 samples, 1.45%)</title><rect x="899.3" y="133" width="17.1" height="15.0" fill="rgb(251,178,15)" rx="2" ry="2" />
+<text  x="902.28" y="143.5" ></text>
+</g>
+<g >
+<title>base::internal::ServiceThread::Run(base::RunLoop*) (69 samples, 100.00%)</title><rect x="10.0" y="341" width="1180.0" height="15.0" fill="rgb(242,98,49)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" >base::internal::ServiceThread::Run(base::RunLoop*)</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() (1 samples, 1.45%)</title><rect x="1087.4" y="181" width="17.1" height="15.0" fill="rgb(227,44,1)" rx="2" ry="2" />
+<text  x="1090.39" y="191.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::AtomicFlagSet::RunActiveCallbacks() const (2 samples, 2.90%)</title><rect x="899.3" y="181" width="34.2" height="15.0" fill="rgb(226,26,7)" rx="2" ry="2" />
+<text  x="902.28" y="191.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkDeduplicator::OnWorkStarted() (2 samples, 2.90%)</title><rect x="1138.7" y="245" width="34.2" height="15.0" fill="rgb(210,156,9)" rx="2" ry="2" />
+<text  x="1141.70" y="255.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GuardedTaskPoster::PostTask(base::sequence_manager::internal::PostedTask) (5 samples, 7.25%)</title><rect x="454.6" y="165" width="85.5" height="15.0" fill="rgb(240,74,1)" rx="2" ry="2" />
+<text  x="457.64" y="175.5" >base::sequ..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.45%)</title><rect x="899.3" y="85" width="17.1" height="15.0" fill="rgb(237,198,2)" rx="2" ry="2" />
+<text  x="902.28" y="95.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::PushTaskSourceAndWakeUpWorkers(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (9 samples, 13.04%)</title><rect x="591.4" y="165" width="154.0" height="15.0" fill="rgb(205,186,54)" rx="2" ry="2" />
+<text  x="594.45" y="175.5" >base::internal::Thr..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::UpdateDelayedWakeUpImpl(base::sequence_manager::LazyNow*, base::Optional&lt;base::sequence_manager::internal::DelayedWakeUp&gt;) (1 samples, 1.45%)</title><rect x="848.0" y="165" width="17.1" height="15.0" fill="rgb(253,9,49)" rx="2" ry="2" />
+<text  x="850.97" y="175.5" ></text>
+</g>
+<g >
+<title>void base::internal::ThreadGroupImpl::ScopedWorkersExecutor::WorkerContainer::ForEachWorker&lt;base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)&gt;(base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)) (7 samples, 10.14%)</title><rect x="625.7" y="133" width="119.7" height="15.0" fill="rgb(207,31,3)" rx="2" ry="2" />
+<text  x="628.65" y="143.5" >void base::int..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueue::TakeImmediateIncomingQueueTasks() (2 samples, 2.90%)</title><rect x="899.3" y="149" width="34.2" height="15.0" fill="rgb(222,84,0)" rx="2" ry="2" />
+<text  x="902.28" y="159.5" >ba..</text>
+</g>
+<g >
+<title>base::Thread::Run(base::RunLoop*) (69 samples, 100.00%)</title><rect x="10.0" y="325" width="1180.0" height="15.0" fill="rgb(237,21,34)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >base::Thread::Run(base::RunLoop*)</text>
+</g>
+<g >
+<title>mach_msg (7 samples, 10.14%)</title><rect x="625.7" y="85" width="119.7" height="15.0" fill="rgb(208,148,48)" rx="2" ry="2" />
+<text  x="628.65" y="95.5" >mach_msg</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 1.45%)</title><rect x="420.4" y="181" width="17.1" height="15.0" fill="rgb(211,143,45)" rx="2" ry="2" />
+<text  x="423.43" y="191.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (7 samples, 10.14%)</title><rect x="625.7" y="101" width="119.7" height="15.0" fill="rgb(248,161,8)" rx="2" ry="2" />
+<text  x="628.65" y="111.5" >base::Waitable..</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 1.45%)</title><rect x="1138.7" y="213" width="17.1" height="15.0" fill="rgb(208,168,22)" rx="2" ry="2" />
+<text  x="1141.70" y="223.5" ></text>
+</g>
+<g >
+<title>base::ScopedDeferTaskPosting::Set(base::ScopedDeferTaskPosting*) (1 samples, 1.45%)</title><rect x="454.6" y="133" width="17.1" height="15.0" fill="rgb(228,26,39)" rx="2" ry="2" />
+<text  x="457.64" y="143.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 1.45%)</title><rect x="1087.4" y="149" width="17.1" height="15.0" fill="rgb(224,206,54)" rx="2" ry="2" />
+<text  x="1090.39" y="159.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (1 samples, 1.45%)</title><rect x="848.0" y="149" width="17.1" height="15.0" fill="rgb(250,8,37)" rx="2" ry="2" />
+<text  x="850.97" y="159.5" ></text>
+</g>
+<g >
+<title>base::PendingTask::PendingTask(base::PendingTask&amp;&amp;) (1 samples, 1.45%)</title><rect x="369.1" y="197" width="17.1" height="15.0" fill="rgb(232,113,20)" rx="2" ry="2" />
+<text  x="372.13" y="207.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 1.45%)</title><rect x="1155.8" y="197" width="17.1" height="15.0" fill="rgb(209,165,36)" rx="2" ry="2" />
+<text  x="1158.80" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::WakeUp() (7 samples, 10.14%)</title><rect x="625.7" y="117" width="119.7" height="15.0" fill="rgb(228,35,25)" rx="2" ry="2" />
+<text  x="628.65" y="127.5" >base::internal..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::ReloadEmptyImmediateWorkQueue() (2 samples, 2.90%)</title><rect x="899.3" y="165" width="34.2" height="15.0" fill="rgb(245,110,41)" rx="2" ry="2" />
+<text  x="902.28" y="175.5" >ba..</text>
+</g>
+<g >
+<title>base::Thread::ThreadMain  0x644a00 (69 samples, 100.00%)</title><rect x="10.0" y="437" width="1180.0" height="15.0" fill="rgb(211,151,0)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >base::Thread::ThreadMain  0x644a00</text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::~RefCountedThreadSafeBase() (1 samples, 1.45%)</title><rect x="386.2" y="181" width="17.1" height="15.0" fill="rgb(208,133,32)" rx="2" ry="2" />
+<text  x="389.23" y="191.5" ></text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 1.45%)</title><rect x="505.9" y="85" width="17.1" height="15.0" fill="rgb(210,50,47)" rx="2" ry="2" />
+<text  x="508.94" y="95.5" ></text>
+</g>
+<g >
+<title>base::(anonymous namespace)::ThreadFunc(void*) (69 samples, 100.00%)</title><rect x="10.0" y="373" width="1180.0" height="15.0" fill="rgb(212,76,27)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >base::(anonymous namespace)::ThreadFunc(void*)</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 1.45%)</title><rect x="1087.4" y="133" width="17.1" height="15.0" fill="rgb(242,215,29)" rx="2" ry="2" />
+<text  x="1090.39" y="143.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::Run(bool, base::TimeDelta) (69 samples, 100.00%)</title><rect x="10.0" y="293" width="1180.0" height="15.0" fill="rgb(250,20,9)" rx="2" ry="2" />
+<text  x="13.00" y="303.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::Run(bool, base::TimeDelta)</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 1.45%)</title><rect x="882.2" y="181" width="17.1" height="15.0" fill="rgb(208,186,13)" rx="2" ry="2" />
+<text  x="885.17" y="191.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostDelayedTaskImpl(base::sequence_manager::internal::PostedTask, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (4 samples, 5.80%)</title><rect x="471.7" y="133" width="68.4" height="15.0" fill="rgb(207,96,33)" rx="2" ry="2" />
+<text  x="474.74" y="143.5" >base::s..</text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 1.45%)</title><rect x="1138.7" y="197" width="17.1" height="15.0" fill="rgb(245,159,49)" rx="2" ry="2" />
+<text  x="1141.70" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::DelayedTaskManager::ScheduleProcessRipeTasksOnServiceThread(base::TimeTicks) (7 samples, 10.14%)</title><rect x="420.4" y="197" width="119.7" height="15.0" fill="rgb(230,191,11)" rx="2" ry="2" />
+<text  x="423.43" y="207.5" >base::internal..</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 1.45%)</title><rect x="1104.5" y="117" width="17.1" height="15.0" fill="rgb(216,186,34)" rx="2" ry="2" />
+<text  x="1107.49" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::Task::Task(base::sequence_manager::internal::PostedTask, base::TimeTicks, base::sequence_manager::internal::EnqueueOrder, base::sequence_manager::internal::EnqueueOrder, base::sequence_manager::internal::WakeUpResolution) (1 samples, 1.45%)</title><rect x="471.7" y="117" width="17.1" height="15.0" fill="rgb(213,100,47)" rx="2" ry="2" />
+<text  x="474.74" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PushOntoDelayedIncomingQueueFromMainThread(base::sequence_manager::Task, base::TimeTicks, bool) (1 samples, 1.45%)</title><rect x="488.8" y="117" width="17.1" height="15.0" fill="rgb(242,203,6)" rx="2" ry="2" />
+<text  x="491.84" y="127.5" ></text>
+</g>
+<g >
+<title>base::internal::TaskTracker::WillQueueTaskSource(scoped_refptr&lt;base::internal::TaskSource&gt;) (2 samples, 2.90%)</title><rect x="557.2" y="165" width="34.2" height="15.0" fill="rgb(226,162,35)" rx="2" ry="2" />
+<text  x="560.25" y="175.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (1 samples, 1.45%)</title><rect x="505.9" y="117" width="17.1" height="15.0" fill="rgb(221,62,39)" rx="2" ry="2" />
+<text  x="508.94" y="127.5" ></text>
+</g>
+<g >
+<title>base::MessagePumpKqueue::Run(base::MessagePump::Delegate*) (68 samples, 98.55%)</title><rect x="10.0" y="277" width="1162.9" height="15.0" fill="rgb(214,224,3)" rx="2" ry="2" />
+<text  x="13.00" y="287.5" >base::MessagePumpKqueue::Run(base::MessagePump::Delegate*)</text>
+</g>
+<g >
+<title>base::internal::WorkerThread::EndUnusedPeriod() (2 samples, 2.90%)</title><rect x="591.4" y="101" width="34.3" height="15.0" fill="rgb(230,73,54)" rx="2" ry="2" />
+<text  x="594.45" y="111.5" >ba..</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 1.45%)</title><rect x="352.0" y="213" width="17.1" height="15.0" fill="rgb(233,121,46)" rx="2" ry="2" />
+<text  x="355.03" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::BindState&lt;base::internal::ThreadPoolImpl::PostTaskWithSequence(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;)::$_0, scoped_refptr&lt;base::internal::Sequence&gt;, base::internal::UnretainedWrapper&lt;base::internal::ThreadPoolImpl&gt; &gt;::Destroy(base::internal::BindStateBase const*) (1 samples, 1.45%)</title><rect x="386.2" y="197" width="17.1" height="15.0" fill="rgb(237,4,40)" rx="2" ry="2" />
+<text  x="389.23" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::MoveReadyDelayedTasksToWorkQueue(base::sequence_manager::LazyNow*) (6 samples, 8.70%)</title><rect x="950.6" y="149" width="102.6" height="15.0" fill="rgb(208,30,25)" rx="2" ry="2" />
+<text  x="953.58" y="159.5" >base::sequen..</text>
+</g>
+<g >
+<title>base::ScopedDeferTaskPosting::ScopedDeferTaskPosting() (1 samples, 1.45%)</title><rect x="454.6" y="149" width="17.1" height="15.0" fill="rgb(212,112,30)" rx="2" ry="2" />
+<text  x="457.64" y="159.5" ></text>
+</g>
+<g >
+<title>base::internal::IntrusiveHeap&lt;base::sequence_manager::internal::WorkQueueSets::OldestTaskEnqueueOrder&gt;::FillHole(unsigned long, base::sequence_manager::internal::WorkQueueSets::OldestTaskEnqueueOrder&amp;&amp;) (1 samples, 1.45%)</title><rect x="1036.1" y="101" width="17.1" height="15.0" fill="rgb(221,185,9)" rx="2" ry="2" />
+<text  x="1039.09" y="111.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (base::sequence_manager::internal::TaskQueueImpl::*)(base::sequence_manager::Task), base::internal::UnretainedWrapper&lt;base::sequence_manager::internal::TaskQueueImpl&gt;, base::sequence_manager::Task&gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (1 samples, 1.45%)</title><rect x="848.0" y="213" width="17.1" height="15.0" fill="rgb(233,94,3)" rx="2" ry="2" />
+<text  x="850.97" y="223.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 2.90%)</title><rect x="1138.7" y="229" width="34.2" height="15.0" fill="rgb(253,51,13)" rx="2" ry="2" />
+<text  x="1141.70" y="239.5" >ba..</text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 1.45%)</title><rect x="608.6" y="69" width="17.1" height="15.0" fill="rgb(234,181,54)" rx="2" ry="2" />
+<text  x="611.55" y="79.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::LazyNow::Now() (1 samples, 1.45%)</title><rect x="933.5" y="149" width="17.1" height="15.0" fill="rgb(247,229,33)" rx="2" ry="2" />
+<text  x="936.48" y="159.5" ></text>
+</g>
+<g >
+<title>free (3 samples, 4.35%)</title><rect x="745.4" y="197" width="51.3" height="15.0" fill="rgb(227,11,44)" rx="2" ry="2" />
+<text  x="748.36" y="207.5" >free</text>
+</g>
+<g >
+<title>mach_absolute_time (1 samples, 1.45%)</title><rect x="523.0" y="101" width="17.1" height="15.0" fill="rgb(213,177,10)" rx="2" ry="2" />
+<text  x="526.04" y="111.5" ></text>
+</g>
+<g >
+<title>all (69 samples, 100%)</title><rect x="10.0" y="453" width="1180.0" height="15.0" fill="rgb(222,132,23)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" ></text>
+</g>
+<g >
+<title>base::internal::IntrusiveHeap&lt;base::sequence_manager::internal::WorkQueueSets::OldestTaskEnqueueOrder&gt;::MoveHoleUpAndFillWithElement(unsigned long, base::sequence_manager::internal::WorkQueueSets::OldestTaskEnqueueOrder&amp;&amp;) (1 samples, 1.45%)</title><rect x="916.4" y="117" width="17.1" height="15.0" fill="rgb(228,46,10)" rx="2" ry="2" />
+<text  x="919.38" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueueSets::OnTaskPushedToEmptyQueue(base::sequence_manager::internal::WorkQueue*) (1 samples, 1.45%)</title><rect x="916.4" y="133" width="17.1" height="15.0" fill="rgb(241,128,26)" rx="2" ry="2" />
+<text  x="919.38" y="143.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (6 samples, 8.70%)</title><rect x="437.5" y="181" width="102.6" height="15.0" fill="rgb(208,98,12)" rx="2" ry="2" />
+<text  x="440.54" y="191.5" >base::sequen..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (2 samples, 2.90%)</title><rect x="813.8" y="133" width="34.2" height="15.0" fill="rgb(229,35,18)" rx="2" ry="2" />
+<text  x="816.77" y="143.5" >ba..</text>
+</g>
+<g >
+<title>base::PendingTask::PendingTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeTicks, base::Nestable) (1 samples, 1.45%)</title><rect x="471.7" y="101" width="17.1" height="15.0" fill="rgb(226,52,14)" rx="2" ry="2" />
+<text  x="474.74" y="111.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (2 samples, 2.90%)</title><rect x="1001.9" y="133" width="34.2" height="15.0" fill="rgb(221,137,46)" rx="2" ry="2" />
+<text  x="1004.88" y="143.5" >ba..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::UpdateDelayedWakeUpImpl(base::sequence_manager::LazyNow*, base::Optional&lt;base::sequence_manager::internal::DelayedWakeUp&gt;) (1 samples, 1.45%)</title><rect x="984.8" y="133" width="17.1" height="15.0" fill="rgb(236,20,33)" rx="2" ry="2" />
+<text  x="987.78" y="143.5" ></text>
+</g>
+<g >
+<title>default_zone_malloc (1 samples, 1.45%)</title><rect x="830.9" y="117" width="17.1" height="15.0" fill="rgb(245,116,20)" rx="2" ry="2" />
+<text  x="833.87" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::UpdateDelayedWakeUpImpl(base::sequence_manager::LazyNow*, base::Optional&lt;base::sequence_manager::internal::DelayedWakeUp&gt;) (1 samples, 1.45%)</title><rect x="488.8" y="101" width="17.1" height="15.0" fill="rgb(248,110,31)" rx="2" ry="2" />
+<text  x="491.84" y="111.5" ></text>
+</g>
+</g>
+</svg>

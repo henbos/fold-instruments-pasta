@@ -1,0 +1,1181 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="502" onload="init(evt)" viewBox="0 0 1200 502" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="502.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="485" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="485" > </text>
+<g id="frames">
+<g >
+<title>mach_msg_trap (3 samples, 3.16%)</title><rect x="755.3" y="85" width="37.2" height="15.0" fill="rgb(214,107,44)" rx="2" ry="2" />
+<text  x="758.26" y="95.5" >mac..</text>
+</g>
+<g >
+<title>tiny_free_no_lock (1 samples, 1.05%)</title><rect x="332.9" y="261" width="12.5" height="15.0" fill="rgb(230,182,42)" rx="2" ry="2" />
+<text  x="335.95" y="271.5" ></text>
+</g>
+<g >
+<title>webrtc::RtcEventRtpPacketOutgoing::RtcEventRtpPacketOutgoing(webrtc::RtpPacketToSend const&amp;, int) (2 samples, 2.11%)</title><rect x="966.4" y="245" width="24.9" height="15.0" fill="rgb(247,52,5)" rx="2" ry="2" />
+<text  x="969.42" y="255.5" >w..</text>
+</g>
+<g >
+<title>webrtc::RtpPacket::RtpPacket() (1 samples, 1.05%)</title><rect x="978.8" y="229" width="12.5" height="15.0" fill="rgb(217,153,40)" rx="2" ry="2" />
+<text  x="981.84" y="239.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="668.3" y="133" width="12.4" height="15.0" fill="rgb(225,92,21)" rx="2" ry="2" />
+<text  x="671.32" y="143.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 1.05%)</title><rect x="668.3" y="149" width="12.4" height="15.0" fill="rgb(225,96,51)" rx="2" ry="2" />
+<text  x="671.32" y="159.5" ></text>
+</g>
+<g >
+<title>small_malloc_from_free_list (1 samples, 1.05%)</title><rect x="693.2" y="101" width="12.4" height="15.0" fill="rgb(225,131,30)" rx="2" ry="2" />
+<text  x="696.16" y="111.5" ></text>
+</g>
+<g >
+<title>base::internal::Task&amp; base::circular_deque&lt;base::internal::Task&gt;::emplace_back&lt;base::internal::Task&gt;(base::internal::Task&amp;&amp;) (1 samples, 1.05%)</title><rect x="867.1" y="117" width="12.4" height="15.0" fill="rgb(218,34,5)" rx="2" ry="2" />
+<text  x="870.05" y="127.5" ></text>
+</g>
+<g >
+<title>webrtc::SendDelayStats::OnSendPacket(unsigned short, long long, unsigned int) (1 samples, 1.05%)</title><rect x="1090.6" y="261" width="12.5" height="15.0" fill="rgb(238,67,21)" rx="2" ry="2" />
+<text  x="1093.63" y="271.5" ></text>
+</g>
+<g >
+<title>cricket::WebRtcVideoChannel::SendRtp(unsigned char const*, unsigned long, webrtc::PacketOptions const&amp;) (24 samples, 25.26%)</title><rect x="432.3" y="245" width="298.1" height="15.0" fill="rgb(220,36,0)" rx="2" ry="2" />
+<text  x="435.32" y="255.5" >cricket::WebRtcVideoChannel::SendRtp(uns..</text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (10 samples, 10.53%)</title><rect x="829.8" y="197" width="124.2" height="15.0" fill="rgb(224,89,44)" rx="2" ry="2" />
+<text  x="832.79" y="207.5" >base::TaskRunne..</text>
+</g>
+<g >
+<title>jingle_glue::JingleThreadWrapper::PostTaskInternal(rtc::Location const&amp;, int, rtc::MessageHandler*, unsigned int, rtc::MessageData*) (19 samples, 20.00%)</title><rect x="444.7" y="213" width="236.0" height="15.0" fill="rgb(247,26,43)" rx="2" ry="2" />
+<text  x="447.74" y="223.5" >jingle_glue::JingleThreadWrappe..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (3 samples, 3.16%)</title><rect x="693.2" y="165" width="37.2" height="15.0" fill="rgb(247,194,33)" rx="2" ry="2" />
+<text  x="696.16" y="175.5" >bas..</text>
+</g>
+<g >
+<title>rtc::CopyOnWriteBuffer::CopyOnWriteBuffer(unsigned long, unsigned long) (3 samples, 3.16%)</title><rect x="693.2" y="229" width="37.2" height="15.0" fill="rgb(254,11,25)" rx="2" ry="2" />
+<text  x="696.16" y="239.5" >rtc..</text>
+</g>
+<g >
+<title>tlv_get_addr (1 samples, 1.05%)</title><rect x="1065.8" y="213" width="12.4" height="15.0" fill="rgb(206,28,33)" rx="2" ry="2" />
+<text  x="1068.79" y="223.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacketHistory::GetPacketAndSetSendTime(unsigned short) (5 samples, 5.26%)</title><rect x="1115.5" y="277" width="62.1" height="15.0" fill="rgb(226,169,22)" rx="2" ry="2" />
+<text  x="1118.47" y="287.5" >webrtc..</text>
+</g>
+<g >
+<title>rtc::CopyOnWriteBuffer::CopyOnWriteBuffer(unsigned long) (1 samples, 1.05%)</title><rect x="978.8" y="213" width="12.5" height="15.0" fill="rgb(226,65,42)" rx="2" ry="2" />
+<text  x="981.84" y="223.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacket::AllocateRawExtension(int, unsigned long) (1 samples, 1.05%)</title><rect x="1078.2" y="245" width="12.4" height="15.0" fill="rgb(241,22,2)" rx="2" ry="2" />
+<text  x="1081.21" y="255.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="1053.4" y="117" width="12.4" height="15.0" fill="rgb(250,6,45)" rx="2" ry="2" />
+<text  x="1056.37" y="127.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="419.9" y="117" width="12.4" height="15.0" fill="rgb(217,228,20)" rx="2" ry="2" />
+<text  x="422.89" y="127.5" ></text>
+</g>
+<g >
+<title>rtc::Event::Wait(int) (14 samples, 14.74%)</title><rect x="96.9" y="325" width="173.9" height="15.0" fill="rgb(245,181,27)" rx="2" ry="2" />
+<text  x="99.95" y="335.5" >rtc::Event::Wait(int)</text>
+</g>
+<g >
+<title>_pthread_mutex_fairshare_unlock_slow (1 samples, 1.05%)</title><rect x="1090.6" y="229" width="12.5" height="15.0" fill="rgb(246,18,24)" rx="2" ry="2" />
+<text  x="1093.63" y="239.5" ></text>
+</g>
+<g >
+<title>tiny_free_list_add_ptr (1 samples, 1.05%)</title><rect x="320.5" y="261" width="12.4" height="15.0" fill="rgb(210,119,11)" rx="2" ry="2" />
+<text  x="323.53" y="271.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="978.8" y="133" width="12.5" height="15.0" fill="rgb(205,169,38)" rx="2" ry="2" />
+<text  x="981.84" y="143.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 1.05%)</title><rect x="804.9" y="245" width="12.5" height="15.0" fill="rgb(246,93,13)" rx="2" ry="2" />
+<text  x="807.95" y="255.5" ></text>
+</g>
+<g >
+<title>webrtc::SequenceCheckerImpl::IsCurrent() const (1 samples, 1.05%)</title><rect x="1065.8" y="229" width="12.4" height="15.0" fill="rgb(254,176,9)" rx="2" ry="2" />
+<text  x="1068.79" y="239.5" ></text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 1.05%)</title><rect x="283.3" y="309" width="12.4" height="15.0" fill="rgb(252,31,28)" rx="2" ry="2" />
+<text  x="286.26" y="319.5" ></text>
+</g>
+<g >
+<title>std::__Cr::pair&lt;std::__Cr::__tree_iterator&lt;std::__Cr::__value_type&lt;long long, webrtc::PacketFeedback&gt;, std::__Cr::__tree_node&lt;std::__Cr::__value_type&lt;long long, webrtc::PacketFeedback&gt;, void*&gt;*, long&gt;, bool&gt; std::__Cr::__tree&lt;std::__Cr::__value_type&lt;long long, webrtc::PacketFeedback&gt;, std::__Cr::__map_value_compare&lt;long long, std::__Cr::__value_type&lt;long long, webrtc::PacketFeedback&gt;, std::__Cr::less&lt;long long&gt;, true&gt;, std::__Cr::allocator&lt;std::__Cr::__value_type&lt;long long, webrtc::PacketFeedback&gt; &gt; &gt;::__emplace_unique_key_args&lt;long long, std::__Cr::pair&lt;long long, webrtc::PacketFeedback&gt; &gt;(long long const&amp;, std::__Cr::pair&lt;long long, webrtc::PacketFeedback&gt;&amp;&amp;) (1 samples, 1.05%)</title><rect x="419.9" y="197" width="12.4" height="15.0" fill="rgb(249,66,8)" rx="2" ry="2" />
+<text  x="422.89" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacket::AllocateExtension(webrtc::RTPExtensionType, unsigned long) (1 samples, 1.05%)</title><rect x="1078.2" y="261" width="12.4" height="15.0" fill="rgb(213,195,52)" rx="2" ry="2" />
+<text  x="1081.21" y="271.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::WakeUp() (2 samples, 2.11%)</title><rect x="904.3" y="85" width="24.9" height="15.0" fill="rgb(229,187,40)" rx="2" ry="2" />
+<text  x="907.32" y="95.5" >b..</text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 1.05%)</title><rect x="804.9" y="213" width="12.5" height="15.0" fill="rgb(218,75,16)" rx="2" ry="2" />
+<text  x="807.95" y="223.5" ></text>
+</g>
+<g >
+<title>non-virtual thunk to webrtc::internal::AudioSendStream::OnPacketAdded(unsigned int, unsigned short) (2 samples, 2.11%)</title><rect x="345.4" y="229" width="24.8" height="15.0" fill="rgb(250,65,54)" rx="2" ry="2" />
+<text  x="348.37" y="239.5" >n..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostTask(base::sequence_manager::internal::PostedTask) (3 samples, 3.16%)</title><rect x="755.3" y="149" width="37.2" height="15.0" fill="rgb(213,142,15)" rx="2" ry="2" />
+<text  x="758.26" y="159.5" >bas..</text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.05%)</title><rect x="419.9" y="101" width="12.4" height="15.0" fill="rgb(240,208,11)" rx="2" ry="2" />
+<text  x="422.89" y="111.5" ></text>
+</g>
+<g >
+<title>small_free_list_remove_ptr (1 samples, 1.05%)</title><rect x="978.8" y="85" width="12.5" height="15.0" fill="rgb(219,202,28)" rx="2" ry="2" />
+<text  x="981.84" y="95.5" ></text>
+</g>
+<g >
+<title>webrtc::RTPSender::TimeToSendPacket(unsigned int, unsigned short, long long, bool, webrtc::PacedPacketInfo const&amp;) (70 samples, 73.68%)</title><rect x="308.1" y="293" width="869.5" height="15.0" fill="rgb(223,127,10)" rx="2" ry="2" />
+<text  x="311.11" y="303.5" >webrtc::RTPSender::TimeToSendPacket(unsigned int, unsigned short, long long, bool, webrtc::PacedPacketInfo const&amp;)</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="978.8" y="149" width="12.5" height="15.0" fill="rgb(249,207,27)" rx="2" ry="2" />
+<text  x="981.84" y="159.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::TimedWaitUntil(base::TimeTicks const&amp;) (12 samples, 12.63%)</title><rect x="109.4" y="293" width="149.0" height="15.0" fill="rgb(254,161,53)" rx="2" ry="2" />
+<text  x="112.37" y="303.5" >base::WaitableEvent..</text>
+</g>
+<g >
+<title>jingle_glue::JingleThreadWrapper::PostTaskInternal(rtc::Location const&amp;, int, rtc::MessageHandler*, unsigned int, rtc::MessageData*) (5 samples, 5.26%)</title><rect x="742.8" y="213" width="62.1" height="15.0" fill="rgb(209,7,46)" rx="2" ry="2" />
+<text  x="745.84" y="223.5" >jingle..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GuardedTaskPoster::PostTask(base::sequence_manager::internal::PostedTask) (12 samples, 12.63%)</title><rect x="457.2" y="165" width="149.0" height="15.0" fill="rgb(249,27,36)" rx="2" ry="2" />
+<text  x="460.16" y="175.5" >base::sequence_mana..</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 1.05%)</title><rect x="96.9" y="309" width="12.5" height="15.0" fill="rgb(253,94,6)" rx="2" ry="2" />
+<text  x="99.95" y="319.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 1.05%)</title><rect x="419.9" y="149" width="12.4" height="15.0" fill="rgb(242,62,41)" rx="2" ry="2" />
+<text  x="422.89" y="159.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.05%)</title><rect x="978.8" y="117" width="12.5" height="15.0" fill="rgb(227,84,11)" rx="2" ry="2" />
+<text  x="981.84" y="127.5" ></text>
+</g>
+<g >
+<title>mach_msg (5 samples, 5.26%)</title><rect x="519.3" y="101" width="62.1" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="522.26" y="111.5" >mach_msg</text>
+</g>
+<g >
+<title>base::internal::ScopedBlockingCallWithBaseSyncPrimitives::ScopedBlockingCallWithBaseSyncPrimitives(base::Location const&amp;, base::BlockingType) (1 samples, 1.05%)</title><rect x="134.2" y="261" width="12.4" height="15.0" fill="rgb(217,54,40)" rx="2" ry="2" />
+<text  x="137.21" y="271.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GuardedTaskPoster::PostTask(base::sequence_manager::internal::PostedTask) (3 samples, 3.16%)</title><rect x="755.3" y="165" width="37.2" height="15.0" fill="rgb(245,219,20)" rx="2" ry="2" />
+<text  x="758.26" y="175.5" >bas..</text>
+</g>
+<g >
+<title>webrtc::RTPSender::SendPacketToNetwork(webrtc::RtpPacketToSend const&amp;, webrtc::PacketOptions const&amp;, webrtc::PacedPacketInfo const&amp;) (45 samples, 47.37%)</title><rect x="432.3" y="261" width="559.0" height="15.0" fill="rgb(249,104,2)" rx="2" ry="2" />
+<text  x="435.32" y="271.5" >webrtc::RTPSender::SendPacketToNetwork(webrtc::RtpPacketToSend const&amp;, webrt..</text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.05%)</title><rect x="1152.7" y="165" width="12.5" height="15.0" fill="rgb(247,66,8)" rx="2" ry="2" />
+<text  x="1155.74" y="175.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 1.05%)</title><rect x="1165.2" y="229" width="12.4" height="15.0" fill="rgb(234,7,38)" rx="2" ry="2" />
+<text  x="1168.16" y="239.5" ></text>
+</g>
+<g >
+<title>rtc::RefCountedObject&lt;rtc::BufferT&lt;unsigned char, false&gt; &gt;::~RefCountedObject() (1 samples, 1.05%)</title><rect x="1103.1" y="245" width="12.4" height="15.0" fill="rgb(216,139,13)" rx="2" ry="2" />
+<text  x="1106.05" y="255.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::PushTaskSourceAndWakeUpWorkers(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (4 samples, 4.21%)</title><rect x="879.5" y="133" width="49.7" height="15.0" fill="rgb(232,51,40)" rx="2" ry="2" />
+<text  x="882.47" y="143.5" >base:..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (3 samples, 3.16%)</title><rect x="693.2" y="149" width="37.2" height="15.0" fill="rgb(238,87,13)" rx="2" ry="2" />
+<text  x="696.16" y="159.5" >bas..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::MaybeAdjustTaskDelay(base::sequence_manager::internal::PostedTask*, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (1 samples, 1.05%)</title><rect x="494.4" y="133" width="12.4" height="15.0" fill="rgb(209,218,35)" rx="2" ry="2" />
+<text  x="497.42" y="143.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostImmediateTaskImpl(base::sequence_manager::internal::PostedTask, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (3 samples, 3.16%)</title><rect x="755.3" y="133" width="37.2" height="15.0" fill="rgb(244,157,54)" rx="2" ry="2" />
+<text  x="758.26" y="143.5" >bas..</text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequenceNow(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (8 samples, 8.42%)</title><rect x="829.8" y="149" width="99.4" height="15.0" fill="rgb(248,194,5)" rx="2" ry="2" />
+<text  x="832.79" y="159.5" >base::intern..</text>
+</g>
+<g >
+<title>webrtc::PacketRouter::AllocateSequenceNumber() (1 samples, 1.05%)</title><rect x="1028.5" y="245" width="12.4" height="15.0" fill="rgb(212,164,1)" rx="2" ry="2" />
+<text  x="1031.53" y="255.5" ></text>
+</g>
+<g >
+<title>unsigned char* rtc::CopyOnWriteBuffer::data&lt;unsigned char, (void*)0&gt;() (1 samples, 1.05%)</title><rect x="1078.2" y="229" width="12.4" height="15.0" fill="rgb(206,4,47)" rx="2" ry="2" />
+<text  x="1081.21" y="239.5" ></text>
+</g>
+<g >
+<title>malloc (3 samples, 3.16%)</title><rect x="693.2" y="197" width="37.2" height="15.0" fill="rgb(251,199,6)" rx="2" ry="2" />
+<text  x="696.16" y="207.5" >mal..</text>
+</g>
+<g >
+<title>non-virtual thunk to webrtc::internal::AudioSendStream::OnPacketAdded(unsigned int, unsigned short) (1 samples, 1.05%)</title><rect x="407.5" y="213" width="12.4" height="15.0" fill="rgb(249,26,7)" rx="2" ry="2" />
+<text  x="410.47" y="223.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (9 samples, 9.47%)</title><rect x="146.6" y="261" width="111.8" height="15.0" fill="rgb(213,159,13)" rx="2" ry="2" />
+<text  x="149.63" y="271.5" >mach_msg_trap</text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (3 samples, 3.16%)</title><rect x="755.3" y="197" width="37.2" height="15.0" fill="rgb(243,52,12)" rx="2" ry="2" />
+<text  x="758.26" y="207.5" >bas..</text>
+</g>
+<g >
+<title>base::TaskAnnotator::WillQueueTask(char const*, base::PendingTask*, char const*) (1 samples, 1.05%)</title><rect x="506.8" y="117" width="12.5" height="15.0" fill="rgb(213,68,35)" rx="2" ry="2" />
+<text  x="509.84" y="127.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (3 samples, 3.16%)</title><rect x="693.2" y="213" width="37.2" height="15.0" fill="rgb(241,66,42)" rx="2" ry="2" />
+<text  x="696.16" y="223.5" >ope..</text>
+</g>
+<g >
+<title>cricket::BaseChannel::SendPacket(bool, rtc::CopyOnWriteBuffer*, rtc::PacketOptions const&amp;) (5 samples, 5.26%)</title><rect x="742.8" y="229" width="62.1" height="15.0" fill="rgb(234,148,40)" rx="2" ry="2" />
+<text  x="745.84" y="239.5" >cricke..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="1152.7" y="197" width="12.5" height="15.0" fill="rgb(230,109,50)" rx="2" ry="2" />
+<text  x="1155.74" y="207.5" ></text>
+</g>
+<g >
+<title>mach_msg (3 samples, 3.16%)</title><rect x="755.3" y="101" width="37.2" height="15.0" fill="rgb(232,121,26)" rx="2" ry="2" />
+<text  x="758.26" y="111.5" >mac..</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 1.05%)</title><rect x="891.9" y="85" width="12.4" height="15.0" fill="rgb(235,199,7)" rx="2" ry="2" />
+<text  x="894.89" y="95.5" ></text>
+</g>
+<g >
+<title>webrtc::RTPSender::UpdateRtpStats(webrtc::RtpPacketToSend const&amp;, bool, bool) (1 samples, 1.05%)</title><rect x="1016.1" y="261" width="12.4" height="15.0" fill="rgb(224,153,10)" rx="2" ry="2" />
+<text  x="1019.11" y="271.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 1.05%)</title><rect x="419.9" y="165" width="12.4" height="15.0" fill="rgb(221,72,25)" rx="2" ry="2" />
+<text  x="422.89" y="175.5" ></text>
+</g>
+<g >
+<title>mach_msg (9 samples, 9.47%)</title><rect x="146.6" y="277" width="111.8" height="15.0" fill="rgb(217,107,49)" rx="2" ry="2" />
+<text  x="149.63" y="287.5" >mach_msg</text>
+</g>
+<g >
+<title>__psynch_mutexwait (1 samples, 1.05%)</title><rect x="854.6" y="53" width="12.5" height="15.0" fill="rgb(212,18,3)" rx="2" ry="2" />
+<text  x="857.63" y="63.5" ></text>
+</g>
+<g >
+<title>webrtc::RTPSender::UpdateTransportSequenceNumber(webrtc::RtpPacketToSend*, int*) (4 samples, 4.21%)</title><rect x="1028.5" y="261" width="49.7" height="15.0" fill="rgb(250,99,41)" rx="2" ry="2" />
+<text  x="1031.53" y="271.5" >webrt..</text>
+</g>
+<g >
+<title>webrtc::RTPSender::AddPacketToTransportFeedback(unsigned short, webrtc::RtpPacketToSend const&amp;, webrtc::PacedPacketInfo const&amp;) (7 samples, 7.37%)</title><rect x="345.4" y="261" width="86.9" height="15.0" fill="rgb(245,139,11)" rx="2" ry="2" />
+<text  x="348.37" y="271.5" >webrtc::RT..</text>
+</g>
+<g >
+<title>_pthread_start (95 samples, 100.00%)</title><rect x="10.0" y="405" width="1180.0" height="15.0" fill="rgb(210,112,52)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >_pthread_start</text>
+</g>
+<g >
+<title>operator delete(void*) (1 samples, 1.05%)</title><rect x="283.3" y="293" width="12.4" height="15.0" fill="rgb(221,147,51)" rx="2" ry="2" />
+<text  x="286.26" y="303.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (3 samples, 3.16%)</title><rect x="693.2" y="133" width="37.2" height="15.0" fill="rgb(232,94,21)" rx="2" ry="2" />
+<text  x="696.16" y="143.5" >szo..</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (2 samples, 2.11%)</title><rect x="10.0" y="341" width="24.8" height="15.0" fill="rgb(215,12,44)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" >&lt;..</text>
+</g>
+<g >
+<title>base::internal::RegisteredTaskSource::operator=(base::internal::RegisteredTaskSource&amp;&amp;) (1 samples, 1.05%)</title><rect x="842.2" y="133" width="12.4" height="15.0" fill="rgb(210,11,21)" rx="2" ry="2" />
+<text  x="845.21" y="143.5" ></text>
+</g>
+<g >
+<title>free_tiny (2 samples, 2.11%)</title><rect x="320.5" y="277" width="24.9" height="15.0" fill="rgb(242,184,26)" rx="2" ry="2" />
+<text  x="323.53" y="287.5" >f..</text>
+</g>
+<g >
+<title>rtc::RefCountedObject&lt;rtc::BufferT&lt;unsigned char, false&gt; &gt;::Release() const (1 samples, 1.05%)</title><rect x="1103.1" y="261" width="12.4" height="15.0" fill="rgb(222,227,8)" rx="2" ry="2" />
+<text  x="1106.05" y="271.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::PostedTask::PostedTask(base::sequence_manager::internal::PostedTask&amp;&amp;) (1 samples, 1.05%)</title><rect x="457.2" y="133" width="12.4" height="15.0" fill="rgb(205,22,0)" rx="2" ry="2" />
+<text  x="460.16" y="143.5" ></text>
+</g>
+<g >
+<title>webrtc::TransportFeedbackAdapter::AddPacket(webrtc::RtpPacketSendInfo const&amp;, unsigned long, webrtc::Timestamp) (3 samples, 3.16%)</title><rect x="395.1" y="229" width="37.2" height="15.0" fill="rgb(236,106,42)" rx="2" ry="2" />
+<text  x="398.05" y="239.5" >web..</text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (2 samples, 2.11%)</title><rect x="904.3" y="69" width="24.9" height="15.0" fill="rgb(226,229,12)" rx="2" ry="2" />
+<text  x="907.32" y="79.5" >b..</text>
+</g>
+<g >
+<title>all (95 samples, 100%)</title><rect x="10.0" y="453" width="1180.0" height="15.0" fill="rgb(220,14,33)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" ></text>
+</g>
+<g >
+<title>cricket::WebRtcVoiceMediaChannel::SendRtp(unsigned char const*, unsigned long, webrtc::PacketOptions const&amp;) (6 samples, 6.32%)</title><rect x="730.4" y="245" width="74.5" height="15.0" fill="rgb(208,138,29)" rx="2" ry="2" />
+<text  x="733.42" y="255.5" >cricket:..</text>
+</g>
+<g >
+<title>mach_msg (2 samples, 2.11%)</title><rect x="904.3" y="53" width="24.9" height="15.0" fill="rgb(220,44,46)" rx="2" ry="2" />
+<text  x="907.32" y="63.5" >m..</text>
+</g>
+<g >
+<title>webrtc::SendStatisticsProxy::DataCountersUpdated(webrtc::StreamDataCounters const&amp;, unsigned int) (1 samples, 1.05%)</title><rect x="1016.1" y="245" width="12.4" height="15.0" fill="rgb(248,126,11)" rx="2" ry="2" />
+<text  x="1019.11" y="255.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_lock_wait (1 samples, 1.05%)</title><rect x="854.6" y="69" width="12.5" height="15.0" fill="rgb(253,83,3)" rx="2" ry="2" />
+<text  x="857.63" y="79.5" ></text>
+</g>
+<g >
+<title>base::internal::WeakReference::WeakReference(base::internal::WeakReference const&amp;) (1 samples, 1.05%)</title><rect x="606.2" y="197" width="12.4" height="15.0" fill="rgb(220,147,31)" rx="2" ry="2" />
+<text  x="609.21" y="207.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (2 samples, 2.11%)</title><rect x="1140.3" y="213" width="24.9" height="15.0" fill="rgb(213,128,27)" rx="2" ry="2" />
+<text  x="1143.32" y="223.5" >b..</text>
+</g>
+<g >
+<title>mach_msg_trap (4 samples, 4.21%)</title><rect x="531.7" y="85" width="49.7" height="15.0" fill="rgb(216,95,42)" rx="2" ry="2" />
+<text  x="534.68" y="95.5" >mach_..</text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (3 samples, 3.16%)</title><rect x="755.3" y="117" width="37.2" height="15.0" fill="rgb(249,73,11)" rx="2" ry="2" />
+<text  x="758.26" y="127.5" >bas..</text>
+</g>
+<g >
+<title>webrtc::SendStatisticsProxy::GetStatsEntry(unsigned int) (1 samples, 1.05%)</title><rect x="1016.1" y="229" width="12.4" height="15.0" fill="rgb(216,80,20)" rx="2" ry="2" />
+<text  x="1019.11" y="239.5" ></text>
+</g>
+<g >
+<title>webrtc::TransportFeedbackPacketLossTracker::OnPacketAdded(unsigned short, long long) (1 samples, 1.05%)</title><rect x="407.5" y="197" width="12.4" height="15.0" fill="rgb(240,9,32)" rx="2" ry="2" />
+<text  x="410.47" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacket::RtpPacket(webrtc::RtpPacket const&amp;) (1 samples, 1.05%)</title><rect x="1165.2" y="245" width="12.4" height="15.0" fill="rgb(208,204,2)" rx="2" ry="2" />
+<text  x="1168.16" y="255.5" ></text>
+</g>
+<g >
+<title>webrtc::ProcessThreadImpl::Run  0x6593ed (95 samples, 100.00%)</title><rect x="10.0" y="437" width="1180.0" height="15.0" fill="rgb(224,84,1)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >webrtc::ProcessThreadImpl::Run  0x6593ed</text>
+</g>
+<g >
+<title>base::circular_deque&lt;base::internal::Task&gt;::back() (1 samples, 1.05%)</title><rect x="867.1" y="101" width="12.4" height="15.0" fill="rgb(218,62,12)" rx="2" ry="2" />
+<text  x="870.05" y="111.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.05%)</title><rect x="419.9" y="85" width="12.4" height="15.0" fill="rgb(232,74,4)" rx="2" ry="2" />
+<text  x="422.89" y="95.5" ></text>
+</g>
+<g >
+<title>set_tiny_meta_header_in_use (1 samples, 1.05%)</title><rect x="1053.4" y="69" width="12.4" height="15.0" fill="rgb(242,29,6)" rx="2" ry="2" />
+<text  x="1056.37" y="79.5" ></text>
+</g>
+<g >
+<title>webrtc::voe::(anonymous namespace)::TransportFeedbackProxy::OnAddPacket(webrtc::RtpPacketSendInfo const&amp;) (3 samples, 3.16%)</title><rect x="395.1" y="245" width="37.2" height="15.0" fill="rgb(246,63,42)" rx="2" ry="2" />
+<text  x="398.05" y="255.5" >web..</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 1.05%)</title><rect x="457.2" y="149" width="12.4" height="15.0" fill="rgb(248,39,23)" rx="2" ry="2" />
+<text  x="460.16" y="159.5" ></text>
+</g>
+<g >
+<title>base::subtle::TimeTicksNowIgnoringOverride() (1 samples, 1.05%)</title><rect x="258.4" y="293" width="12.4" height="15.0" fill="rgb(221,110,19)" rx="2" ry="2" />
+<text  x="261.42" y="303.5" ></text>
+</g>
+<g >
+<title>non-virtual thunk to base::internal::ThreadPoolImpl::PostTaskWithSequence(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (1 samples, 1.05%)</title><rect x="941.6" y="165" width="12.4" height="15.0" fill="rgb(220,202,54)" rx="2" ry="2" />
+<text  x="944.58" y="175.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (13 samples, 13.68%)</title><rect x="444.7" y="181" width="161.5" height="15.0" fill="rgb(251,15,7)" rx="2" ry="2" />
+<text  x="447.74" y="191.5" >base::sequence_manag..</text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::Release() const (1 samples, 1.05%)</title><rect x="929.2" y="149" width="12.4" height="15.0" fill="rgb(231,99,31)" rx="2" ry="2" />
+<text  x="932.16" y="159.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;::Ring::push_back(base::sequence_manager::Task&amp;&amp;) (1 samples, 1.05%)</title><rect x="581.4" y="101" width="12.4" height="15.0" fill="rgb(236,123,40)" rx="2" ry="2" />
+<text  x="584.37" y="111.5" ></text>
+</g>
+<g >
+<title>rtc::PlatformThread::StartThread(void*) (95 samples, 100.00%)</title><rect x="10.0" y="373" width="1180.0" height="15.0" fill="rgb(231,194,47)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >rtc::PlatformThread::StartThread(void*)</text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 1.05%)</title><rect x="419.9" y="181" width="12.4" height="15.0" fill="rgb(206,187,43)" rx="2" ry="2" />
+<text  x="422.89" y="191.5" ></text>
+</g>
+<g >
+<title>void base::internal::ThreadGroupImpl::ScopedWorkersExecutor::WorkerContainer::ForEachWorker&lt;base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)&gt;(base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)) (2 samples, 2.11%)</title><rect x="904.3" y="101" width="24.9" height="15.0" fill="rgb(218,41,7)" rx="2" ry="2" />
+<text  x="907.32" y="111.5" >v..</text>
+</g>
+<g >
+<title>_pthread_body (95 samples, 100.00%)</title><rect x="10.0" y="389" width="1180.0" height="15.0" fill="rgb(224,178,39)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >_pthread_body</text>
+</g>
+<g >
+<title>scoped_refptr&lt;base::internal::BindStateBase&gt; base::AdoptRef&lt;base::internal::BindStateBase&gt;(base::internal::BindStateBase*) (1 samples, 1.05%)</title><rect x="643.5" y="197" width="12.4" height="15.0" fill="rgb(210,63,47)" rx="2" ry="2" />
+<text  x="646.47" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacket::~RtpPacket() (1 samples, 1.05%)</title><rect x="1103.1" y="277" width="12.4" height="15.0" fill="rgb(222,41,43)" rx="2" ry="2" />
+<text  x="1106.05" y="287.5" ></text>
+</g>
+<g >
+<title>webrtc::RTPSender::PrepareAndSendPacket(std::__Cr::unique_ptr&lt;webrtc::RtpPacketToSend, std::__Cr::default_delete&lt;webrtc::RtpPacketToSend&gt; &gt;, bool, bool, webrtc::PacedPacketInfo const&amp;) (61 samples, 64.21%)</title><rect x="345.4" y="277" width="757.7" height="15.0" fill="rgb(217,99,6)" rx="2" ry="2" />
+<text  x="348.37" y="287.5" >webrtc::RTPSender::PrepareAndSendPacket(std::__Cr::unique_ptr&lt;webrtc::RtpPacketToSend, std::__Cr::default..</text>
+</g>
+<g >
+<title>webrtc::ProcessThreadImpl::Process() (93 samples, 97.89%)</title><rect x="34.8" y="341" width="1155.2" height="15.0" fill="rgb(206,177,12)" rx="2" ry="2" />
+<text  x="37.84" y="351.5" >webrtc::ProcessThreadImpl::Process()</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostImmediateTaskImpl(base::sequence_manager::internal::PostedTask, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (8 samples, 8.42%)</title><rect x="506.8" y="133" width="99.4" height="15.0" fill="rgb(223,50,43)" rx="2" ry="2" />
+<text  x="509.84" y="143.5" >base::sequen..</text>
+</g>
+<g >
+<title>pthread_mutex_lock (2 samples, 2.11%)</title><rect x="59.7" y="325" width="24.8" height="15.0" fill="rgb(218,217,12)" rx="2" ry="2" />
+<text  x="62.68" y="335.5" >p..</text>
+</g>
+<g >
+<title>webrtc::TransportFeedbackAdapter::AddPacket(webrtc::RtpPacketSendInfo const&amp;, unsigned long, webrtc::Timestamp) (4 samples, 4.21%)</title><rect x="345.4" y="245" width="49.7" height="15.0" fill="rgb(232,135,49)" rx="2" ry="2" />
+<text  x="348.37" y="255.5" >webrt..</text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.05%)</title><rect x="804.9" y="165" width="12.5" height="15.0" fill="rgb(241,40,14)" rx="2" ry="2" />
+<text  x="807.95" y="175.5" ></text>
+</g>
+<g >
+<title>base::circular_deque&lt;base::internal::Task&gt;::CheckValidIndex(unsigned long) const (1 samples, 1.05%)</title><rect x="867.1" y="69" width="12.4" height="15.0" fill="rgb(208,7,52)" rx="2" ry="2" />
+<text  x="870.05" y="79.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacketToSend::RtpPacketToSend(webrtc::RtpPacketToSend const&amp;) (1 samples, 1.05%)</title><rect x="1165.2" y="261" width="12.4" height="15.0" fill="rgb(242,184,18)" rx="2" ry="2" />
+<text  x="1168.16" y="271.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (5 samples, 5.26%)</title><rect x="519.3" y="117" width="62.1" height="15.0" fill="rgb(220,133,45)" rx="2" ry="2" />
+<text  x="522.26" y="127.5" >base::..</text>
+</g>
+<g >
+<title>base::internal::ThreadGroup::PushTaskSourceAndWakeUpWorkersImpl(base::internal::ThreadGroup::BaseScopedWorkersExecutor*, base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (1 samples, 1.05%)</title><rect x="879.5" y="117" width="12.4" height="15.0" fill="rgb(235,12,52)" rx="2" ry="2" />
+<text  x="882.47" y="127.5" ></text>
+</g>
+<g >
+<title>base::internal::OperationsController::TryBeginOperation() (1 samples, 1.05%)</title><rect x="469.6" y="149" width="12.4" height="15.0" fill="rgb(226,94,4)" rx="2" ry="2" />
+<text  x="472.58" y="159.5" ></text>
+</g>
+<g >
+<title>base::internal::UncheckedScopedBlockingCall::UncheckedScopedBlockingCall(base::BlockingType) (1 samples, 1.05%)</title><rect x="134.2" y="245" width="12.4" height="15.0" fill="rgb(252,125,1)" rx="2" ry="2" />
+<text  x="137.21" y="255.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="1053.4" y="133" width="12.4" height="15.0" fill="rgb(252,155,25)" rx="2" ry="2" />
+<text  x="1056.37" y="143.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="804.9" y="197" width="12.5" height="15.0" fill="rgb(214,26,6)" rx="2" ry="2" />
+<text  x="807.95" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TraceQueueSize() const (1 samples, 1.05%)</title><rect x="593.8" y="117" width="12.4" height="15.0" fill="rgb(217,178,52)" rx="2" ry="2" />
+<text  x="596.79" y="127.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_from_free_list (1 samples, 1.05%)</title><rect x="718.0" y="101" width="12.4" height="15.0" fill="rgb(250,218,53)" rx="2" ry="2" />
+<text  x="721.00" y="111.5" ></text>
+</g>
+<g >
+<title>cricket::BaseChannel::SendPacket(bool, rtc::CopyOnWriteBuffer*, rtc::PacketOptions const&amp;) (19 samples, 20.00%)</title><rect x="444.7" y="229" width="236.0" height="15.0" fill="rgb(224,165,21)" rx="2" ry="2" />
+<text  x="447.74" y="239.5" >cricket::BaseChannel::SendPacke..</text>
+</g>
+<g >
+<title>base::internal::Sequence::BeginTransaction() (1 samples, 1.05%)</title><rect x="854.6" y="133" width="12.5" height="15.0" fill="rgb(233,154,15)" rx="2" ry="2" />
+<text  x="857.63" y="143.5" ></text>
+</g>
+<g >
+<title>webrtc::RtcEventLogImpl::Log(std::__Cr::unique_ptr&lt;webrtc::RtcEvent, std::__Cr::default_delete&lt;webrtc::RtcEvent&gt; &gt;) (12 samples, 12.63%)</title><rect x="817.4" y="245" width="149.0" height="15.0" fill="rgb(210,98,29)" rx="2" ry="2" />
+<text  x="820.37" y="255.5" >webrtc::RtcEventLog..</text>
+</g>
+<g >
+<title>rtc::CriticalSection::Enter() const (1 samples, 1.05%)</title><rect x="84.5" y="325" width="12.4" height="15.0" fill="rgb(234,206,26)" rx="2" ry="2" />
+<text  x="87.53" y="335.5" ></text>
+</g>
+<g >
+<title>webrtc::PacketRouter::TimeToSendPacket(unsigned int, unsigned short, long long, bool, webrtc::PacedPacketInfo const&amp;) (70 samples, 73.68%)</title><rect x="308.1" y="309" width="869.5" height="15.0" fill="rgb(231,199,27)" rx="2" ry="2" />
+<text  x="311.11" y="319.5" >webrtc::PacketRouter::TimeToSendPacket(unsigned int, unsigned short, long long, bool, webrtc::PacedPacketInfo const&amp;)</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 1.05%)</title><rect x="308.1" y="277" width="12.4" height="15.0" fill="rgb(210,16,27)" rx="2" ry="2" />
+<text  x="311.11" y="287.5" ></text>
+</g>
+<g >
+<title>webrtc::PacedPacketInfo::PacedPacketInfo() (1 samples, 1.05%)</title><rect x="295.7" y="309" width="12.4" height="15.0" fill="rgb(224,201,39)" rx="2" ry="2" />
+<text  x="298.68" y="319.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacket::AllocateExtension(webrtc::RTPExtensionType, unsigned long) (2 samples, 2.11%)</title><rect x="1040.9" y="245" width="24.9" height="15.0" fill="rgb(218,114,49)" rx="2" ry="2" />
+<text  x="1043.95" y="255.5" >w..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="668.3" y="117" width="12.4" height="15.0" fill="rgb(250,136,5)" rx="2" ry="2" />
+<text  x="671.32" y="127.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.05%)</title><rect x="668.3" y="101" width="12.4" height="15.0" fill="rgb(254,187,1)" rx="2" ry="2" />
+<text  x="671.32" y="111.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::ScopedWorkersExecutor::~ScopedWorkersExecutor() (3 samples, 3.16%)</title><rect x="891.9" y="117" width="37.3" height="15.0" fill="rgb(243,96,27)" rx="2" ry="2" />
+<text  x="894.89" y="127.5" >bas..</text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (1 samples, 1.05%)</title><rect x="494.4" y="117" width="12.4" height="15.0" fill="rgb(210,57,39)" rx="2" ry="2" />
+<text  x="497.42" y="127.5" ></text>
+</g>
+<g >
+<title>webrtc::PacedSender::Process() (74 samples, 77.89%)</title><rect x="270.8" y="325" width="919.2" height="15.0" fill="rgb(225,178,37)" rx="2" ry="2" />
+<text  x="273.84" y="335.5" >webrtc::PacedSender::Process()</text>
+</g>
+<g >
+<title>base::internal::LockImpl::Lock() (1 samples, 1.05%)</title><rect x="854.6" y="101" width="12.5" height="15.0" fill="rgb(235,200,29)" rx="2" ry="2" />
+<text  x="857.63" y="111.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (2 samples, 2.11%)</title><rect x="1140.3" y="229" width="24.9" height="15.0" fill="rgb(251,62,11)" rx="2" ry="2" />
+<text  x="1143.32" y="239.5" >m..</text>
+</g>
+<g >
+<title>operator new(unsigned long) (2 samples, 2.11%)</title><rect x="1040.9" y="181" width="24.9" height="15.0" fill="rgb(229,158,47)" rx="2" ry="2" />
+<text  x="1043.95" y="191.5" >o..</text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 1.05%)</title><rect x="978.8" y="197" width="12.5" height="15.0" fill="rgb(232,138,31)" rx="2" ry="2" />
+<text  x="981.84" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::ScopedBlockingCallWithBaseSyncPrimitives::ScopedBlockingCallWithBaseSyncPrimitives(base::BlockingType) (1 samples, 1.05%)</title><rect x="134.2" y="277" width="12.4" height="15.0" fill="rgb(252,164,14)" rx="2" ry="2" />
+<text  x="137.21" y="287.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 1.05%)</title><rect x="978.8" y="181" width="12.5" height="15.0" fill="rgb(254,42,24)" rx="2" ry="2" />
+<text  x="981.84" y="191.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (3 samples, 3.16%)</title><rect x="693.2" y="181" width="37.2" height="15.0" fill="rgb(208,28,24)" rx="2" ry="2" />
+<text  x="696.16" y="191.5" >mal..</text>
+</g>
+<g >
+<title>malloc_zone_malloc (2 samples, 2.11%)</title><rect x="1040.9" y="149" width="24.9" height="15.0" fill="rgb(224,79,21)" rx="2" ry="2" />
+<text  x="1043.95" y="159.5" >m..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (3 samples, 3.16%)</title><rect x="755.3" y="181" width="37.2" height="15.0" fill="rgb(240,213,45)" rx="2" ry="2" />
+<text  x="758.26" y="191.5" >bas..</text>
+</g>
+<g >
+<title>dispatch_queue_get_label (2 samples, 2.11%)</title><rect x="345.4" y="213" width="24.8" height="15.0" fill="rgb(241,0,4)" rx="2" ry="2" />
+<text  x="348.37" y="223.5" >d..</text>
+</g>
+<g >
+<title>base::WaitableEvent::TimedWait(base::TimeDelta const&amp;) (13 samples, 13.68%)</title><rect x="109.4" y="309" width="161.4" height="15.0" fill="rgb(211,79,51)" rx="2" ry="2" />
+<text  x="112.37" y="319.5" >base::WaitableEvent:..</text>
+</g>
+<g >
+<title>non-virtual thunk to cricket::BaseChannel::SendPacket(rtc::CopyOnWriteBuffer*, rtc::PacketOptions const&amp;) (1 samples, 1.05%)</title><rect x="680.7" y="229" width="12.5" height="15.0" fill="rgb(212,136,48)" rx="2" ry="2" />
+<text  x="683.74" y="239.5" ></text>
+</g>
+<g >
+<title>webrtc::SendTimeHistory::RemoveOld(long long) (1 samples, 1.05%)</title><rect x="382.6" y="229" width="12.5" height="15.0" fill="rgb(230,123,16)" rx="2" ry="2" />
+<text  x="385.63" y="239.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 1.05%)</title><rect x="134.2" y="229" width="12.4" height="15.0" fill="rgb(216,162,32)" rx="2" ry="2" />
+<text  x="137.21" y="239.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;::push_back(base::sequence_manager::Task) (1 samples, 1.05%)</title><rect x="581.4" y="117" width="12.4" height="15.0" fill="rgb(224,139,52)" rx="2" ry="2" />
+<text  x="584.37" y="127.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="419.9" y="133" width="12.4" height="15.0" fill="rgb(241,146,15)" rx="2" ry="2" />
+<text  x="422.89" y="143.5" ></text>
+</g>
+<g >
+<title>rtc::CopyOnWriteBuffer::CloneDataIfReferenced(unsigned long) (1 samples, 1.05%)</title><rect x="1078.2" y="213" width="12.4" height="15.0" fill="rgb(240,148,26)" rx="2" ry="2" />
+<text  x="1081.21" y="223.5" ></text>
+</g>
+<g >
+<title>rtc::CopyOnWriteBuffer::CloneDataIfReferenced(unsigned long) (2 samples, 2.11%)</title><rect x="1040.9" y="197" width="24.9" height="15.0" fill="rgb(215,22,4)" rx="2" ry="2" />
+<text  x="1043.95" y="207.5" >r..</text>
+</g>
+<g >
+<title>rtc::CriticalSection::Leave() const (1 samples, 1.05%)</title><rect x="1090.6" y="245" width="12.5" height="15.0" fill="rgb(235,9,41)" rx="2" ry="2" />
+<text  x="1093.63" y="255.5" ></text>
+</g>
+<g >
+<title>malloc (2 samples, 2.11%)</title><rect x="1040.9" y="165" width="24.9" height="15.0" fill="rgb(234,198,38)" rx="2" ry="2" />
+<text  x="1043.95" y="175.5" >m..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostTask(base::sequence_manager::internal::PostedTask) (10 samples, 10.53%)</title><rect x="482.0" y="149" width="124.2" height="15.0" fill="rgb(254,149,53)" rx="2" ry="2" />
+<text  x="485.00" y="159.5" >base::sequence_..</text>
+</g>
+<g >
+<title>small_malloc_should_clear (1 samples, 1.05%)</title><rect x="978.8" y="101" width="12.5" height="15.0" fill="rgb(229,141,6)" rx="2" ry="2" />
+<text  x="981.84" y="111.5" ></text>
+</g>
+<g >
+<title>webrtc::SendTimeHistory::AddNewPacket(webrtc::PacketFeedback) (1 samples, 1.05%)</title><rect x="419.9" y="213" width="12.4" height="15.0" fill="rgb(210,47,34)" rx="2" ry="2" />
+<text  x="422.89" y="223.5" ></text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::AddRef() const (1 samples, 1.05%)</title><rect x="954.0" y="197" width="12.4" height="15.0" fill="rgb(215,128,48)" rx="2" ry="2" />
+<text  x="957.00" y="207.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 1.05%)</title><rect x="668.3" y="165" width="12.4" height="15.0" fill="rgb(209,71,31)" rx="2" ry="2" />
+<text  x="671.32" y="175.5" ></text>
+</g>
+<g >
+<title>base::internal::Sequence::Transaction::PushTask(base::internal::Task) (1 samples, 1.05%)</title><rect x="867.1" y="133" width="12.4" height="15.0" fill="rgb(230,205,23)" rx="2" ry="2" />
+<text  x="870.05" y="143.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacket::AllocateRawExtension(int, unsigned long) (2 samples, 2.11%)</title><rect x="1040.9" y="229" width="24.9" height="15.0" fill="rgb(222,63,0)" rx="2" ry="2" />
+<text  x="1043.95" y="239.5" >w..</text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.05%)</title><rect x="1053.4" y="85" width="12.4" height="15.0" fill="rgb(223,13,30)" rx="2" ry="2" />
+<text  x="1056.37" y="95.5" ></text>
+</g>
+<g >
+<title>small_malloc_should_clear (1 samples, 1.05%)</title><rect x="693.2" y="117" width="12.4" height="15.0" fill="rgb(217,142,2)" rx="2" ry="2" />
+<text  x="696.16" y="127.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::AssertNoLockHeldOnCurrentThread() (1 samples, 1.05%)</title><rect x="891.9" y="101" width="12.4" height="15.0" fill="rgb(227,182,50)" rx="2" ry="2" />
+<text  x="894.89" y="111.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_firstfit_lock_slow (1 samples, 1.05%)</title><rect x="854.6" y="85" width="12.5" height="15.0" fill="rgb(243,205,0)" rx="2" ry="2" />
+<text  x="857.63" y="95.5" ></text>
+</g>
+<g >
+<title>base::time_internal::SaturatedAdd(long long, base::TimeDelta) (1 samples, 1.05%)</title><rect x="96.9" y="293" width="12.5" height="15.0" fill="rgb(245,128,26)" rx="2" ry="2" />
+<text  x="99.95" y="303.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (1 samples, 1.05%)</title><rect x="854.6" y="117" width="12.5" height="15.0" fill="rgb(229,136,14)" rx="2" ry="2" />
+<text  x="857.63" y="127.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Release() (1 samples, 1.05%)</title><rect x="879.5" y="101" width="12.4" height="15.0" fill="rgb(241,163,1)" rx="2" ry="2" />
+<text  x="882.47" y="111.5" ></text>
+</g>
+<g >
+<title>malloc (2 samples, 2.11%)</title><rect x="1140.3" y="245" width="24.9" height="15.0" fill="rgb(251,97,53)" rx="2" ry="2" />
+<text  x="1143.32" y="255.5" >m..</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 1.05%)</title><rect x="444.7" y="165" width="12.5" height="15.0" fill="rgb(241,163,34)" rx="2" ry="2" />
+<text  x="447.74" y="175.5" ></text>
+</g>
+<g >
+<title>thread_start (95 samples, 100.00%)</title><rect x="10.0" y="421" width="1180.0" height="15.0" fill="rgb(246,184,53)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >thread_start</text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.05%)</title><rect x="668.3" y="85" width="12.4" height="15.0" fill="rgb(254,105,7)" rx="2" ry="2" />
+<text  x="671.32" y="95.5" ></text>
+</g>
+<g >
+<title>base::internal::OperationsController::TryBeginOperation() (1 samples, 1.05%)</title><rect x="444.7" y="149" width="12.5" height="15.0" fill="rgb(244,1,11)" rx="2" ry="2" />
+<text  x="447.74" y="159.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.05%)</title><rect x="1053.4" y="101" width="12.4" height="15.0" fill="rgb(254,129,7)" rx="2" ry="2" />
+<text  x="1056.37" y="111.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequence(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (9 samples, 9.47%)</title><rect x="829.8" y="165" width="111.8" height="15.0" fill="rgb(227,8,46)" rx="2" ry="2" />
+<text  x="832.79" y="175.5" >base::interna..</text>
+</g>
+<g >
+<title>_pthread_mutex_fairshare_lock_slow (1 samples, 1.05%)</title><rect x="84.5" y="309" width="12.4" height="15.0" fill="rgb(243,27,40)" rx="2" ry="2" />
+<text  x="87.53" y="319.5" ></text>
+</g>
+<g >
+<title>(anonymous namespace)::WebrtcTaskQueue::PostTask(std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;) (11 samples, 11.58%)</title><rect x="829.8" y="213" width="136.6" height="15.0" fill="rgb(221,158,28)" rx="2" ry="2" />
+<text  x="832.79" y="223.5" >(anonymous namesp..</text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 1.05%)</title><rect x="978.8" y="165" width="12.5" height="15.0" fill="rgb(220,0,12)" rx="2" ry="2" />
+<text  x="981.84" y="175.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (2 samples, 2.11%)</title><rect x="618.6" y="197" width="24.9" height="15.0" fill="rgb(211,73,29)" rx="2" ry="2" />
+<text  x="621.63" y="207.5" >p..</text>
+</g>
+<g >
+<title>operator new(unsigned long) (2 samples, 2.11%)</title><rect x="1140.3" y="261" width="24.9" height="15.0" fill="rgb(226,96,8)" rx="2" ry="2" />
+<text  x="1143.32" y="271.5" >o..</text>
+</g>
+<g >
+<title>webrtc::voe::(anonymous namespace)::TransportSequenceNumberProxy::AllocateSequenceNumber() (1 samples, 1.05%)</title><rect x="1065.8" y="245" width="12.4" height="15.0" fill="rgb(241,117,38)" rx="2" ry="2" />
+<text  x="1068.79" y="255.5" ></text>
+</g>
+<g >
+<title>webrtc::RTPSender::UpdateDelayStatistics(long long, long long, unsigned int) (2 samples, 2.11%)</title><rect x="991.3" y="261" width="24.8" height="15.0" fill="rgb(230,143,26)" rx="2" ry="2" />
+<text  x="994.26" y="271.5" >w..</text>
+</g>
+<g >
+<title>std::__Cr::pair&lt;std::__Cr::__tree_iterator&lt;std::__Cr::__value_type&lt;int, rtc::Message&gt;, std::__Cr::__tree_node&lt;std::__Cr::__value_type&lt;int, rtc::Message&gt;, void*&gt;*, long&gt;, bool&gt; std::__Cr::__tree&lt;std::__Cr::__value_type&lt;int, rtc::Message&gt;, std::__Cr::__map_value_compare&lt;int, std::__Cr::__value_type&lt;int, rtc::Message&gt;, std::__Cr::less&lt;int&gt;, true&gt;, std::__Cr::allocator&lt;std::__Cr::__value_type&lt;int, rtc::Message&gt; &gt; &gt;::__emplace_unique_key_args&lt;int, std::__Cr::pair&lt;int, rtc::Message&gt; &gt;(int const&amp;, std::__Cr::pair&lt;int, rtc::Message&gt;&amp;&amp;) (2 samples, 2.11%)</title><rect x="655.9" y="197" width="24.8" height="15.0" fill="rgb(215,16,28)" rx="2" ry="2" />
+<text  x="658.89" y="207.5" >s..</text>
+</g>
+<g >
+<title>unsigned char* rtc::CopyOnWriteBuffer::data&lt;unsigned char, (void*)0&gt;() (2 samples, 2.11%)</title><rect x="1040.9" y="213" width="24.9" height="15.0" fill="rgb(207,181,10)" rx="2" ry="2" />
+<text  x="1043.95" y="223.5" >u..</text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.05%)</title><rect x="804.9" y="149" width="12.5" height="15.0" fill="rgb(231,183,30)" rx="2" ry="2" />
+<text  x="807.95" y="159.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 1.05%)</title><rect x="804.9" y="229" width="12.5" height="15.0" fill="rgb(213,206,32)" rx="2" ry="2" />
+<text  x="807.95" y="239.5" ></text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (13 samples, 13.68%)</title><rect x="444.7" y="197" width="161.5" height="15.0" fill="rgb(210,220,21)" rx="2" ry="2" />
+<text  x="447.74" y="207.5" >base::TaskRunner::Po..</text>
+</g>
+<g >
+<title>free (1 samples, 1.05%)</title><rect x="1103.1" y="229" width="12.4" height="15.0" fill="rgb(231,224,42)" rx="2" ry="2" />
+<text  x="1106.05" y="239.5" ></text>
+</g>
+<g >
+<title>webrtc::RtpPacket::AllocateExtension(webrtc::RTPExtensionType, unsigned long) (1 samples, 1.05%)</title><rect x="308.1" y="261" width="12.4" height="15.0" fill="rgb(250,177,4)" rx="2" ry="2" />
+<text  x="311.11" y="271.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.05%)</title><rect x="1152.7" y="181" width="12.5" height="15.0" fill="rgb(219,99,4)" rx="2" ry="2" />
+<text  x="1155.74" y="191.5" ></text>
+</g>
+<g >
+<title>rtc::CurrentThreadRef() (1 samples, 1.05%)</title><rect x="370.2" y="229" width="12.4" height="15.0" fill="rgb(206,68,49)" rx="2" ry="2" />
+<text  x="373.21" y="239.5" ></text>
+</g>
+<g >
+<title>webrtc::PacedSender::Process() (2 samples, 2.11%)</title><rect x="10.0" y="325" width="24.8" height="15.0" fill="rgb(210,50,12)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >w..</text>
+</g>
+<g >
+<title>webrtc::RealTimeClock::TimeInMicroseconds() (1 samples, 1.05%)</title><rect x="1177.6" y="309" width="12.4" height="15.0" fill="rgb(209,47,13)" rx="2" ry="2" />
+<text  x="1180.58" y="319.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (2 samples, 2.11%)</title><rect x="904.3" y="37" width="24.9" height="15.0" fill="rgb(207,17,33)" rx="2" ry="2" />
+<text  x="907.32" y="47.5" >m..</text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 1.05%)</title><rect x="668.3" y="181" width="12.4" height="15.0" fill="rgb(242,138,35)" rx="2" ry="2" />
+<text  x="671.32" y="191.5" ></text>
+</g>
+<g >
+<title>std::__Cr::pair&lt;std::__Cr::__tree_iterator&lt;std::__Cr::__value_type&lt;int, rtc::Message&gt;, std::__Cr::__tree_node&lt;std::__Cr::__value_type&lt;int, rtc::Message&gt;, void*&gt;*, long&gt;, bool&gt; std::__Cr::__tree&lt;std::__Cr::__value_type&lt;int, rtc::Message&gt;, std::__Cr::__map_value_compare&lt;int, std::__Cr::__value_type&lt;int, rtc::Message&gt;, std::__Cr::less&lt;int&gt;, true&gt;, std::__Cr::allocator&lt;std::__Cr::__value_type&lt;int, rtc::Message&gt; &gt; &gt;::__emplace_unique_key_args&lt;int, std::__Cr::pair&lt;int, rtc::Message&gt; &gt;(int const&amp;, std::__Cr::pair&lt;int, rtc::Message&gt;&amp;&amp;) (1 samples, 1.05%)</title><rect x="792.5" y="197" width="12.4" height="15.0" fill="rgb(221,124,0)" rx="2" ry="2" />
+<text  x="795.53" y="207.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (2 samples, 2.11%)</title><rect x="705.6" y="117" width="24.8" height="15.0" fill="rgb(224,121,2)" rx="2" ry="2" />
+<text  x="708.58" y="127.5" >t..</text>
+</g>
+<g >
+<title>base::internal::PooledSequencedTaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (10 samples, 10.53%)</title><rect x="829.8" y="181" width="124.2" height="15.0" fill="rgb(212,82,43)" rx="2" ry="2" />
+<text  x="832.79" y="191.5" >base::internal:..</text>
+</g>
+<g >
+<title>webrtc::ProcessThreadImpl::Run(void*) (95 samples, 100.00%)</title><rect x="10.0" y="357" width="1180.0" height="15.0" fill="rgb(210,71,51)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >webrtc::ProcessThreadImpl::Run(void*)</text>
+</g>
+<g >
+<title>rtc::TaskQueue::PostTask(std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;) (11 samples, 11.58%)</title><rect x="829.8" y="229" width="136.6" height="15.0" fill="rgb(238,48,18)" rx="2" ry="2" />
+<text  x="832.79" y="239.5" >rtc::TaskQueue::P..</text>
+</g>
+<g >
+<title>base::internal::circular_deque_const_iterator&lt;base::internal::Task&gt;::operator*() const (1 samples, 1.05%)</title><rect x="867.1" y="85" width="12.4" height="15.0" fill="rgb(240,203,54)" rx="2" ry="2" />
+<text  x="870.05" y="95.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.05%)</title><rect x="804.9" y="181" width="12.5" height="15.0" fill="rgb(242,5,12)" rx="2" ry="2" />
+<text  x="807.95" y="191.5" ></text>
+</g>
+</g>
+</svg>

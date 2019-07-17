@@ -1,0 +1,1065 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="518" onload="init(evt)" viewBox="0 0 1200 518" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="518.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="501" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="501" > </text>
+<g id="frames">
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() (1 samples, 1.47%)</title><rect x="1033.8" y="197" width="17.4" height="15.0" fill="rgb(208,16,54)" rx="2" ry="2" />
+<text  x="1036.82" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::RunsTasksInCurrentSequence() const (1 samples, 1.47%)</title><rect x="270.3" y="197" width="17.3" height="15.0" fill="rgb(234,115,29)" rx="2" ry="2" />
+<text  x="273.29" y="207.5" ></text>
+</g>
+<g >
+<title>content::CategorizedWorkerPool::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (6 samples, 8.82%)</title><rect x="357.1" y="165" width="104.1" height="15.0" fill="rgb(253,197,51)" rx="2" ry="2" />
+<text  x="360.06" y="175.5" >content::Cat..</text>
+</g>
+<g >
+<title>free_tiny (1 samples, 1.47%)</title><rect x="738.8" y="165" width="17.4" height="15.0" fill="rgb(221,160,10)" rx="2" ry="2" />
+<text  x="741.82" y="175.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.47%)</title><rect x="652.1" y="69" width="17.3" height="15.0" fill="rgb(249,66,22)" rx="2" ry="2" />
+<text  x="655.06" y="79.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="1068.5" y="165" width="17.4" height="15.0" fill="rgb(235,87,1)" rx="2" ry="2" />
+<text  x="1071.53" y="175.5" ></text>
+</g>
+<g >
+<title>base::circular_deque&lt;media::GpuMemoryBufferVideoFramePool::PoolImpl::VideoFrameCopyRequest&gt;::back() (1 samples, 1.47%)</title><rect x="495.9" y="181" width="17.3" height="15.0" fill="rgb(206,61,49)" rx="2" ry="2" />
+<text  x="498.88" y="191.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 1.47%)</title><rect x="1068.5" y="133" width="17.4" height="15.0" fill="rgb(231,227,45)" rx="2" ry="2" />
+<text  x="1071.53" y="143.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 1.47%)</title><rect x="790.9" y="149" width="17.3" height="15.0" fill="rgb(248,173,51)" rx="2" ry="2" />
+<text  x="793.88" y="159.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.47%)</title><rect x="790.9" y="53" width="17.3" height="15.0" fill="rgb(207,134,17)" rx="2" ry="2" />
+<text  x="793.88" y="63.5" ></text>
+</g>
+<g >
+<title>objc_msgSend (1 samples, 1.47%)</title><rect x="1172.6" y="309" width="17.4" height="15.0" fill="rgb(238,190,10)" rx="2" ry="2" />
+<text  x="1175.65" y="319.5" ></text>
+</g>
+<g >
+<title>gpu::MailboxHolder::MailboxHolder() (1 samples, 1.47%)</title><rect x="565.3" y="213" width="17.3" height="15.0" fill="rgb(244,7,20)" rx="2" ry="2" />
+<text  x="568.29" y="223.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() (1 samples, 1.47%)</title><rect x="1085.9" y="213" width="17.3" height="15.0" fill="rgb(239,65,38)" rx="2" ry="2" />
+<text  x="1088.88" y="223.5" ></text>
+</g>
+<g >
+<title>_pthread_body (68 samples, 100.00%)</title><rect x="10.0" y="405" width="1180.0" height="15.0" fill="rgb(243,57,1)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >_pthread_body</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="1085.9" y="197" width="17.3" height="15.0" fill="rgb(215,192,10)" rx="2" ry="2" />
+<text  x="1088.88" y="207.5" ></text>
+</g>
+<g >
+<title>gpu::SharedImageInterfaceProxy::UpdateSharedImage(gpu::SyncToken const&amp;, std::__Cr::unique_ptr&lt;gfx::GpuFence, std::__Cr::default_delete&lt;gfx::GpuFence&gt; &gt;, gpu::Mailbox const&amp;) (5 samples, 7.35%)</title><rect x="582.6" y="197" width="86.8" height="15.0" fill="rgb(230,123,40)" rx="2" ry="2" />
+<text  x="585.65" y="207.5" >gpu::Share..</text>
+</g>
+<g >
+<title>_CFAutoreleasePoolPop (1 samples, 1.47%)</title><rect x="27.4" y="277" width="17.3" height="15.0" fill="rgb(247,217,10)" rx="2" ry="2" />
+<text  x="30.35" y="287.5" ></text>
+</g>
+<g >
+<title>operator delete(void*) (1 samples, 1.47%)</title><rect x="513.2" y="245" width="17.4" height="15.0" fill="rgb(251,99,31)" rx="2" ry="2" />
+<text  x="516.24" y="255.5" ></text>
+</g>
+<g >
+<title>gpu::SharedImageInterfaceProxy::UpdateSharedImage(gpu::SyncToken const&amp;, gpu::Mailbox const&amp;) (5 samples, 7.35%)</title><rect x="582.6" y="213" width="86.8" height="15.0" fill="rgb(208,2,29)" rx="2" ry="2" />
+<text  x="585.65" y="223.5" >gpu::Share..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueSelector::GetHighestPendingPriority() const (1 samples, 1.47%)</title><rect x="825.6" y="245" width="17.3" height="15.0" fill="rgb(213,148,3)" rx="2" ry="2" />
+<text  x="828.59" y="255.5" ></text>
+</g>
+<g >
+<title>gpu::Capabilities::Capabilities(gpu::Capabilities const&amp;) (2 samples, 2.94%)</title><rect x="322.4" y="181" width="34.7" height="15.0" fill="rgb(219,163,3)" rx="2" ry="2" />
+<text  x="325.35" y="191.5" >gp..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.47%)</title><rect x="790.9" y="85" width="17.3" height="15.0" fill="rgb(240,102,33)" rx="2" ry="2" />
+<text  x="793.88" y="95.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 1.47%)</title><rect x="652.1" y="133" width="17.3" height="15.0" fill="rgb(229,18,2)" rx="2" ry="2" />
+<text  x="655.06" y="143.5" ></text>
+</g>
+<g >
+<title>free (1 samples, 1.47%)</title><rect x="704.1" y="197" width="17.4" height="15.0" fill="rgb(239,146,19)" rx="2" ry="2" />
+<text  x="707.12" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkDeduplicator::OnWorkStarted() (1 samples, 1.47%)</title><rect x="1137.9" y="277" width="17.4" height="15.0" fill="rgb(253,136,5)" rx="2" ry="2" />
+<text  x="1140.94" y="287.5" ></text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (2 samples, 2.94%)</title><rect x="669.4" y="165" width="34.7" height="15.0" fill="rgb(229,177,11)" rx="2" ry="2" />
+<text  x="672.41" y="175.5" >ba..</text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (2 samples, 2.94%)</title><rect x="756.2" y="149" width="34.7" height="15.0" fill="rgb(228,120,33)" rx="2" ry="2" />
+<text  x="759.18" y="159.5" >ba..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="877.6" y="213" width="17.4" height="15.0" fill="rgb(234,41,36)" rx="2" ry="2" />
+<text  x="880.65" y="223.5" ></text>
+</g>
+<g >
+<title>base::MessagePumpDefault::Run(base::MessagePump::Delegate*) (67 samples, 98.53%)</title><rect x="10.0" y="309" width="1162.6" height="15.0" fill="rgb(224,35,42)" rx="2" ry="2" />
+<text  x="13.00" y="319.5" >base::MessagePumpDefault::Run(base::MessagePump::Delegate*)</text>
+</g>
+<g >
+<title>base::subtle::TimeTicksNowIgnoringOverride() (1 samples, 1.47%)</title><rect x="964.4" y="133" width="17.4" height="15.0" fill="rgb(248,43,48)" rx="2" ry="2" />
+<text  x="967.41" y="143.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (1 samples, 1.47%)</title><rect x="895.0" y="213" width="17.4" height="15.0" fill="rgb(241,45,25)" rx="2" ry="2" />
+<text  x="898.00" y="223.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 1.47%)</title><rect x="773.5" y="101" width="17.4" height="15.0" fill="rgb(210,22,11)" rx="2" ry="2" />
+<text  x="776.53" y="111.5" ></text>
+</g>
+<g >
+<title>cc::TaskGraphWorkQueue::ScheduleTasks(cc::NamespaceToken, cc::TaskGraph*) (1 samples, 1.47%)</title><rect x="409.1" y="133" width="17.4" height="15.0" fill="rgb(227,124,23)" rx="2" ry="2" />
+<text  x="412.12" y="143.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (2 samples, 2.94%)</title><rect x="756.2" y="197" width="34.7" height="15.0" fill="rgb(240,121,1)" rx="2" ry="2" />
+<text  x="759.18" y="207.5" >op..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::MoveReadyDelayedTasksToWorkQueues(base::sequence_manager::LazyNow*) (3 samples, 4.41%)</title><rect x="999.1" y="213" width="52.1" height="15.0" fill="rgb(252,92,18)" rx="2" ry="2" />
+<text  x="1002.12" y="223.5" >base:..</text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 1.47%)</title><rect x="877.6" y="197" width="17.4" height="15.0" fill="rgb(217,117,8)" rx="2" ry="2" />
+<text  x="880.65" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::NotifyDidProcessTask(base::sequence_manager::internal::SequenceManagerImpl::ExecutingTask*, base::sequence_manager::LazyNow*) (1 samples, 1.47%)</title><rect x="895.0" y="245" width="17.4" height="15.0" fill="rgb(215,23,14)" rx="2" ry="2" />
+<text  x="898.00" y="255.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::DelayTillNextTask(base::sequence_manager::LazyNow*) const (2 samples, 2.94%)</title><rect x="808.2" y="261" width="34.7" height="15.0" fill="rgb(245,227,15)" rx="2" ry="2" />
+<text  x="811.24" y="271.5" >ba..</text>
+</g>
+<g >
+<title>pthread_mach_thread_np (1 samples, 1.47%)</title><rect x="270.3" y="181" width="17.3" height="15.0" fill="rgb(218,223,7)" rx="2" ry="2" />
+<text  x="273.29" y="191.5" ></text>
+</g>
+<g >
+<title>(anonymous namespace)::AutoreleasePoolPage::fastcheck(bool) (1 samples, 1.47%)</title><rect x="27.4" y="245" width="17.3" height="15.0" fill="rgb(219,110,54)" rx="2" ry="2" />
+<text  x="30.35" y="255.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_from_free_list (1 samples, 1.47%)</title><rect x="652.1" y="53" width="17.3" height="15.0" fill="rgb(220,85,39)" rx="2" ry="2" />
+<text  x="655.06" y="63.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="825.6" y="229" width="17.3" height="15.0" fill="rgb(207,150,22)" rx="2" ry="2" />
+<text  x="828.59" y="239.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.47%)</title><rect x="652.1" y="117" width="17.3" height="15.0" fill="rgb(231,27,8)" rx="2" ry="2" />
+<text  x="655.06" y="127.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::Run(bool, base::TimeDelta) (68 samples, 100.00%)</title><rect x="10.0" y="325" width="1180.0" height="15.0" fill="rgb(243,214,0)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::Run(bool, base::TimeDelta)</text>
+</g>
+<g >
+<title>cc::TaskGraphWorkQueue::CollectCompletedTasks(cc::NamespaceToken, std::__Cr::vector&lt;scoped_refptr&lt;cc::Task&gt;, std::__Cr::allocator&lt;scoped_refptr&lt;cc::Task&gt; &gt; &gt;*) (2 samples, 2.94%)</title><rect x="357.1" y="149" width="34.7" height="15.0" fill="rgb(208,30,53)" rx="2" ry="2" />
+<text  x="360.06" y="159.5" >cc..</text>
+</g>
+<g >
+<title>content::GpuVideoAcceleratorFactoriesImpl::VideoFrameOutputFormat(media::VideoPixelFormat) (4 samples, 5.88%)</title><rect x="287.6" y="197" width="69.5" height="15.0" fill="rgb(250,83,44)" rx="2" ry="2" />
+<text  x="290.65" y="207.5" >content..</text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 1.47%)</title><rect x="721.5" y="197" width="17.3" height="15.0" fill="rgb(212,156,8)" rx="2" ry="2" />
+<text  x="724.47" y="207.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="1103.2" y="181" width="17.4" height="15.0" fill="rgb(217,183,47)" rx="2" ry="2" />
+<text  x="1106.24" y="191.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueSelector::SelectWorkQueueToService() (1 samples, 1.47%)</title><rect x="1120.6" y="213" width="17.3" height="15.0" fill="rgb(208,110,31)" rx="2" ry="2" />
+<text  x="1123.59" y="223.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (2 samples, 2.94%)</title><rect x="756.2" y="133" width="34.7" height="15.0" fill="rgb(211,224,25)" rx="2" ry="2" />
+<text  x="759.18" y="143.5" >ba..</text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 1.47%)</title><rect x="305.0" y="133" width="17.4" height="15.0" fill="rgb(234,75,6)" rx="2" ry="2" />
+<text  x="308.00" y="143.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() const (1 samples, 1.47%)</title><rect x="1103.2" y="197" width="17.4" height="15.0" fill="rgb(247,204,48)" rx="2" ry="2" />
+<text  x="1106.24" y="207.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 1.47%)</title><rect x="652.1" y="165" width="17.3" height="15.0" fill="rgb(213,212,43)" rx="2" ry="2" />
+<text  x="655.06" y="175.5" ></text>
+</g>
+<g >
+<title>std::__Cr::vector&lt;gpu::SyncToken, std::__Cr::allocator&lt;gpu::SyncToken&gt; &gt;::push_back(gpu::SyncToken const&amp;) (1 samples, 1.47%)</title><rect x="652.1" y="181" width="17.3" height="15.0" fill="rgb(231,147,0)" rx="2" ry="2" />
+<text  x="655.06" y="191.5" ></text>
+</g>
+<g >
+<title>media::GpuMemoryBufferVideoFramePool::MaybeCreateHardwareFrame(scoped_refptr&lt;media::VideoFrame&gt;, base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;) (14 samples, 20.59%)</title><rect x="270.3" y="229" width="242.9" height="15.0" fill="rgb(229,27,29)" rx="2" ry="2" />
+<text  x="273.29" y="239.5" >media::GpuMemoryBufferVideoFrame..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueueSets::OnTaskPushedToEmptyQueue(base::sequence_manager::internal::WorkQueue*) (1 samples, 1.47%)</title><rect x="981.8" y="165" width="17.3" height="15.0" fill="rgb(248,144,41)" rx="2" ry="2" />
+<text  x="984.76" y="175.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() (1 samples, 1.47%)</title><rect x="947.1" y="181" width="17.3" height="15.0" fill="rgb(251,210,29)" rx="2" ry="2" />
+<text  x="950.06" y="191.5" ></text>
+</g>
+<g >
+<title>base::Thread::Run(base::RunLoop*) (68 samples, 100.00%)</title><rect x="10.0" y="357" width="1180.0" height="15.0" fill="rgb(206,192,44)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >base::Thread::Run(base::RunLoop*)</text>
+</g>
+<g >
+<title>mach_msg (10 samples, 14.71%)</title><rect x="79.4" y="261" width="173.5" height="15.0" fill="rgb(213,23,35)" rx="2" ry="2" />
+<text  x="82.41" y="271.5" >mach_msg</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::MaybeAdjustTaskDelay(base::sequence_manager::internal::PostedTask*, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (1 samples, 1.47%)</title><rect x="669.4" y="101" width="17.4" height="15.0" fill="rgb(242,170,2)" rx="2" ry="2" />
+<text  x="672.41" y="111.5" ></text>
+</g>
+<g >
+<title>base::internal::circular_deque_const_iterator&lt;media::GpuMemoryBufferVideoFramePool::PoolImpl::VideoFrameCopyRequest&gt;::operator*() const (1 samples, 1.47%)</title><rect x="495.9" y="165" width="17.3" height="15.0" fill="rgb(253,133,3)" rx="2" ry="2" />
+<text  x="498.88" y="175.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoIdleWork() (1 samples, 1.47%)</title><rect x="1155.3" y="277" width="17.3" height="15.0" fill="rgb(250,112,19)" rx="2" ry="2" />
+<text  x="1158.29" y="287.5" ></text>
+</g>
+<g >
+<title>base::Value::Value(base::span&lt;unsigned char const, 18446744073709551615ul&gt;) (1 samples, 1.47%)</title><rect x="547.9" y="181" width="17.4" height="15.0" fill="rgb(235,100,16)" rx="2" ry="2" />
+<text  x="550.94" y="191.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TakeImmediateIncomingQueueTasks(base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;*) (1 samples, 1.47%)</title><rect x="964.4" y="165" width="17.4" height="15.0" fill="rgb(235,125,47)" rx="2" ry="2" />
+<text  x="967.41" y="175.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GetQueuePriority() const (1 samples, 1.47%)</title><rect x="1103.2" y="213" width="17.4" height="15.0" fill="rgb(224,117,1)" rx="2" ry="2" />
+<text  x="1106.24" y="223.5" ></text>
+</g>
+<g >
+<title>base::PlatformThread::CurrentRef() (1 samples, 1.47%)</title><rect x="1120.6" y="181" width="17.3" height="15.0" fill="rgb(212,59,19)" rx="2" ry="2" />
+<text  x="1123.59" y="191.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.47%)</title><rect x="652.1" y="101" width="17.3" height="15.0" fill="rgb(249,58,27)" rx="2" ry="2" />
+<text  x="655.06" y="111.5" ></text>
+</g>
+<g >
+<title>DYLD-STUB$$pthread_mutex_unlock (1 samples, 1.47%)</title><rect x="947.1" y="149" width="17.3" height="15.0" fill="rgb(231,48,0)" rx="2" ry="2" />
+<text  x="950.06" y="159.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::RequiresTaskTiming() const (1 samples, 1.47%)</title><rect x="1068.5" y="197" width="17.4" height="15.0" fill="rgb(244,43,39)" rx="2" ry="2" />
+<text  x="1071.53" y="207.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 1.47%)</title><rect x="790.9" y="101" width="17.3" height="15.0" fill="rgb(254,120,49)" rx="2" ry="2" />
+<text  x="793.88" y="111.5" ></text>
+</g>
+<g >
+<title>media::GpuMemoryBufferVideoFramePool::PoolImpl::StartCopy() (8 samples, 11.76%)</title><rect x="357.1" y="197" width="138.8" height="15.0" fill="rgb(232,119,52)" rx="2" ry="2" />
+<text  x="360.06" y="207.5" >media::GpuMemoryB..</text>
+</g>
+<g >
+<title>gpu::gles2::GLES2Implementation::GetGraphicsResetStatusKHR() (1 samples, 1.47%)</title><rect x="305.0" y="165" width="17.4" height="15.0" fill="rgb(208,103,49)" rx="2" ry="2" />
+<text  x="308.00" y="175.5" ></text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (6 samples, 8.82%)</title><rect x="357.1" y="181" width="104.1" height="15.0" fill="rgb(251,163,25)" rx="2" ry="2" />
+<text  x="360.06" y="191.5" >base::TaskRu..</text>
+</g>
+<g >
+<title>cc::TaskGraph::~TaskGraph() (1 samples, 1.47%)</title><rect x="374.4" y="133" width="17.4" height="15.0" fill="rgb(233,60,31)" rx="2" ry="2" />
+<text  x="377.41" y="143.5" ></text>
+</g>
+<g >
+<title>media::GpuMemoryBufferVideoFramePool::PoolImpl::CreateHardwareFrame(scoped_refptr&lt;media::VideoFrame&gt;, base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;) (14 samples, 20.59%)</title><rect x="270.3" y="213" width="242.9" height="15.0" fill="rgb(234,50,11)" rx="2" ry="2" />
+<text  x="273.29" y="223.5" >media::GpuMemoryBufferVideoFrame..</text>
+</g>
+<g >
+<title>content::GpuVideoAcceleratorFactoriesImpl::CheckContextLost() (2 samples, 2.94%)</title><rect x="287.6" y="181" width="34.8" height="15.0" fill="rgb(252,49,17)" rx="2" ry="2" />
+<text  x="290.65" y="191.5" >co..</text>
+</g>
+<g >
+<title>base::Value::Clone() const (1 samples, 1.47%)</title><rect x="547.9" y="197" width="17.4" height="15.0" fill="rgb(251,105,6)" rx="2" ry="2" />
+<text  x="550.94" y="207.5" ></text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 1.47%)</title><rect x="669.4" y="69" width="17.4" height="15.0" fill="rgb(251,85,6)" rx="2" ry="2" />
+<text  x="672.41" y="79.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::AtomicFlagSet::RunActiveCallbacks() const (4 samples, 5.88%)</title><rect x="929.7" y="213" width="69.4" height="15.0" fill="rgb(241,106,6)" rx="2" ry="2" />
+<text  x="932.71" y="223.5" >base::s..</text>
+</g>
+<g >
+<title>base::TaskAnnotator::RunTask(char const*, base::PendingTask*) (31 samples, 45.59%)</title><rect x="270.3" y="261" width="537.9" height="15.0" fill="rgb(217,2,25)" rx="2" ry="2" />
+<text  x="273.29" y="271.5" >base::TaskAnnotator::RunTask(char const*, base::PendingTask*)</text>
+</g>
+<g >
+<title>non-virtual thunk to base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoIdleWork() (1 samples, 1.47%)</title><rect x="1155.3" y="293" width="17.3" height="15.0" fill="rgb(247,189,38)" rx="2" ry="2" />
+<text  x="1158.29" y="303.5" ></text>
+</g>
+<g >
+<title>__psynch_cvsignal (1 samples, 1.47%)</title><rect x="443.8" y="85" width="17.4" height="15.0" fill="rgb(216,32,46)" rx="2" ry="2" />
+<text  x="446.82" y="95.5" ></text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::Release() const (1 samples, 1.47%)</title><rect x="374.4" y="117" width="17.4" height="15.0" fill="rgb(242,76,9)" rx="2" ry="2" />
+<text  x="377.41" y="127.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (2 samples, 2.94%)</title><rect x="756.2" y="117" width="34.7" height="15.0" fill="rgb(252,112,19)" rx="2" ry="2" />
+<text  x="759.18" y="127.5" >sz..</text>
+</g>
+<g >
+<title>malloc (1 samples, 1.47%)</title><rect x="652.1" y="149" width="17.3" height="15.0" fill="rgb(213,228,33)" rx="2" ry="2" />
+<text  x="655.06" y="159.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() const (1 samples, 1.47%)</title><rect x="808.2" y="229" width="17.4" height="15.0" fill="rgb(210,97,30)" rx="2" ry="2" />
+<text  x="811.24" y="239.5" ></text>
+</g>
+<g >
+<title>media::GpuMemoryBufferVideoFramePool::PoolImpl::BindAndCreateMailboxesHardwareFrameResources(scoped_refptr&lt;media::VideoFrame&gt;, media::GpuMemoryBufferVideoFramePool::PoolImpl::FrameResources*) (16 samples, 23.53%)</title><rect x="530.6" y="229" width="277.6" height="15.0" fill="rgb(241,181,40)" rx="2" ry="2" />
+<text  x="533.59" y="239.5" >media::GpuMemoryBufferVideoFramePool:..</text>
+</g>
+<g >
+<title>base::MessagePumpKqueue::ScheduleWork() (1 samples, 1.47%)</title><rect x="686.8" y="85" width="17.3" height="15.0" fill="rgb(252,178,36)" rx="2" ry="2" />
+<text  x="689.76" y="95.5" ></text>
+</g>
+<g >
+<title>mach_absolute_time (1 samples, 1.47%)</title><rect x="964.4" y="117" width="17.4" height="15.0" fill="rgb(221,189,34)" rx="2" ry="2" />
+<text  x="967.41" y="127.5" ></text>
+</g>
+<g >
+<title>mach_msg_send (1 samples, 1.47%)</title><rect x="686.8" y="69" width="17.3" height="15.0" fill="rgb(208,101,37)" rx="2" ry="2" />
+<text  x="689.76" y="79.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (2 samples, 2.94%)</title><rect x="756.2" y="165" width="34.7" height="15.0" fill="rgb(236,4,53)" rx="2" ry="2" />
+<text  x="759.18" y="175.5" >ma..</text>
+</g>
+<g >
+<title>gpu::GpuChannelHost::EnqueueDeferredMessage(IPC::Message const&amp;, std::__Cr::vector&lt;gpu::SyncToken, std::__Cr::allocator&lt;gpu::SyncToken&gt; &gt;) (1 samples, 1.47%)</title><rect x="634.7" y="181" width="17.4" height="15.0" fill="rgb(236,88,26)" rx="2" ry="2" />
+<text  x="637.71" y="191.5" ></text>
+</g>
+<g >
+<title>scoped_refptr&lt;base::internal::BindStateBase&gt; base::AdoptRef&lt;base::internal::BindStateBase&gt;(base::internal::BindStateBase*) (2 samples, 2.94%)</title><rect x="461.2" y="181" width="34.7" height="15.0" fill="rgb(219,64,29)" rx="2" ry="2" />
+<text  x="464.18" y="191.5" >sc..</text>
+</g>
+<g >
+<title>DYLD-STUB$$IPC::ParamTraits&lt;base::FileDescriptor&gt;::Write(base::Pickle*, base::FileDescriptor const&amp;) (1 samples, 1.47%)</title><rect x="600.0" y="165" width="17.4" height="15.0" fill="rgb(239,152,46)" rx="2" ry="2" />
+<text  x="603.00" y="175.5" ></text>
+</g>
+<g >
+<title>mach_msg (1 samples, 1.47%)</title><rect x="686.8" y="53" width="17.3" height="15.0" fill="rgb(219,197,13)" rx="2" ry="2" />
+<text  x="689.76" y="63.5" ></text>
+</g>
+<g >
+<title>_pthread_start (68 samples, 100.00%)</title><rect x="10.0" y="421" width="1180.0" height="15.0" fill="rgb(214,184,9)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >_pthread_start</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::NotifyWillProcessTask(base::sequence_manager::internal::SequenceManagerImpl::ExecutingTask*, base::sequence_manager::LazyNow*) (2 samples, 2.94%)</title><rect x="1051.2" y="213" width="34.7" height="15.0" fill="rgb(248,131,35)" rx="2" ry="2" />
+<text  x="1054.18" y="223.5" >ba..</text>
+</g>
+<g >
+<title>base::allocator::(anonymous namespace)::GetSizeEstimateImpl(base::allocator::AllocatorDispatch const*, void*, void*) (1 samples, 1.47%)</title><rect x="704.1" y="181" width="17.4" height="15.0" fill="rgb(215,199,45)" rx="2" ry="2" />
+<text  x="707.12" y="191.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="912.4" y="213" width="17.3" height="15.0" fill="rgb(219,196,7)" rx="2" ry="2" />
+<text  x="915.35" y="223.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (media::GpuMemoryBufferVideoFramePool::*)(scoped_refptr&lt;media::VideoFrame&gt;, base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;), base::internal::UnretainedWrapper&lt;media::GpuMemoryBufferVideoFramePool&gt;, scoped_refptr&lt;media::VideoFrame&gt;, base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt; &gt;, void ()&gt;::RunOnce(base::internal::BindStateBase*) (14 samples, 20.59%)</title><rect x="270.3" y="245" width="242.9" height="15.0" fill="rgb(229,105,6)" rx="2" ry="2" />
+<text  x="273.29" y="255.5" >base::internal::Invoker&lt;base::in..</text>
+</g>
+<g >
+<title>std::__Cr::pair&lt;std::__Cr::__wrap_iter&lt;std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt;*&gt;, bool&gt; base::internal::flat_tree&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt;, base::internal::GetKeyFromValuePairFirst&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt;, std::__Cr::less&lt;void&gt; &gt;::emplace_key_args&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt;(std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; const&amp;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;&amp;&amp;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt;&amp;&amp;) (1 samples, 1.47%)</title><rect x="790.9" y="181" width="17.3" height="15.0" fill="rgb(212,126,8)" rx="2" ry="2" />
+<text  x="793.88" y="191.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::TakeTask() (13 samples, 19.12%)</title><rect x="912.4" y="245" width="225.5" height="15.0" fill="rgb(238,14,11)" rx="2" ry="2" />
+<text  x="915.35" y="255.5" >base::sequence_manager::inter..</text>
+</g>
+<g >
+<title>content::CategorizedWorkerPool::ScheduleTasksWithLockAcquired(cc::NamespaceToken, cc::TaskGraph*) (3 samples, 4.41%)</title><rect x="409.1" y="149" width="52.1" height="15.0" fill="rgb(241,185,8)" rx="2" ry="2" />
+<text  x="412.12" y="159.5" >conte..</text>
+</g>
+<g >
+<title>base::WaitableEvent::Wait() (11 samples, 16.18%)</title><rect x="62.1" y="293" width="190.8" height="15.0" fill="rgb(230,155,34)" rx="2" ry="2" />
+<text  x="65.06" y="303.5" >base::WaitableEvent::Wai..</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 1.47%)</title><rect x="1085.9" y="165" width="17.3" height="15.0" fill="rgb(217,36,31)" rx="2" ry="2" />
+<text  x="1088.88" y="175.5" ></text>
+</g>
+<g >
+<title>content::CategorizedWorkerPool::SignalHasReadyToRunTasksWithLockAcquired() (2 samples, 2.94%)</title><rect x="426.5" y="133" width="34.7" height="15.0" fill="rgb(214,115,41)" rx="2" ry="2" />
+<text  x="429.47" y="143.5" >co..</text>
+</g>
+<g >
+<title>non-virtual thunk to base::sequence_manager::internal::SequenceManagerImpl::TakeTask() (13 samples, 19.12%)</title><rect x="912.4" y="261" width="225.5" height="15.0" fill="rgb(220,229,4)" rx="2" ry="2" />
+<text  x="915.35" y="271.5" >non-virtual thunk to base::se..</text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 1.47%)</title><rect x="1103.2" y="165" width="17.4" height="15.0" fill="rgb(220,37,19)" rx="2" ry="2" />
+<text  x="1106.24" y="175.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 1.47%)</title><rect x="790.9" y="133" width="17.3" height="15.0" fill="rgb(253,134,15)" rx="2" ry="2" />
+<text  x="793.88" y="143.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostTask(base::sequence_manager::internal::PostedTask) (2 samples, 2.94%)</title><rect x="669.4" y="117" width="34.7" height="15.0" fill="rgb(248,86,14)" rx="2" ry="2" />
+<text  x="672.41" y="127.5" >ba..</text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.47%)</title><rect x="790.9" y="69" width="17.3" height="15.0" fill="rgb(233,56,53)" rx="2" ry="2" />
+<text  x="793.88" y="79.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::DidRunTask() (4 samples, 5.88%)</title><rect x="842.9" y="261" width="69.5" height="15.0" fill="rgb(221,209,51)" rx="2" ry="2" />
+<text  x="845.94" y="271.5" >base::s..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::main_thread_only() (1 samples, 1.47%)</title><rect x="877.6" y="229" width="17.4" height="15.0" fill="rgb(210,49,30)" rx="2" ry="2" />
+<text  x="880.65" y="239.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_unlock (1 samples, 1.47%)</title><rect x="634.7" y="165" width="17.4" height="15.0" fill="rgb(220,55,3)" rx="2" ry="2" />
+<text  x="637.71" y="175.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::CleanUpQueues() (2 samples, 2.94%)</title><rect x="860.3" y="245" width="34.7" height="15.0" fill="rgb(244,195,24)" rx="2" ry="2" />
+<text  x="863.29" y="255.5" >ba..</text>
+</g>
+<g >
+<title>malloc (2 samples, 2.94%)</title><rect x="756.2" y="181" width="34.7" height="15.0" fill="rgb(206,212,54)" rx="2" ry="2" />
+<text  x="759.18" y="191.5" >ma..</text>
+</g>
+<g >
+<title>non-virtual thunk to base::sequence_manager::internal::SequenceManagerImpl::OnSystemIdle() (1 samples, 1.47%)</title><rect x="1155.3" y="261" width="17.3" height="15.0" fill="rgb(248,36,38)" rx="2" ry="2" />
+<text  x="1158.29" y="271.5" ></text>
+</g>
+<g >
+<title>(anonymous namespace)::AutoreleasePoolPage::pop(void*) (1 samples, 1.47%)</title><rect x="27.4" y="261" width="17.3" height="15.0" fill="rgb(224,81,5)" rx="2" ry="2" />
+<text  x="30.35" y="271.5" ></text>
+</g>
+<g >
+<title>std::__Cr::vector&lt;unsigned char, std::__Cr::allocator&lt;unsigned char&gt; &gt;::vector&lt;base::CheckedRandomAccessIterator&lt;unsigned char const&gt; &gt;(base::CheckedRandomAccessIterator&lt;unsigned char const&gt;, std::__Cr::enable_if&lt;(__is_forward_iterator&lt;base::CheckedRandomAccessIterator&lt;unsigned char const&gt; &gt;::value) &amp;&amp; (is_constructible&lt;unsigned char, std::__Cr::iterator_traits&lt;base::CheckedRandomAccessIterator&lt;unsigned char const&gt; &gt;::reference&gt;::value), base::CheckedRandomAccessIterator&lt;unsigned char const&gt; &gt;::type) (1 samples, 1.47%)</title><rect x="547.9" y="165" width="17.4" height="15.0" fill="rgb(215,157,45)" rx="2" ry="2" />
+<text  x="550.94" y="175.5" ></text>
+</g>
+<g >
+<title>pthread_cond_signal (2 samples, 2.94%)</title><rect x="426.5" y="101" width="34.7" height="15.0" fill="rgb(252,45,17)" rx="2" ry="2" />
+<text  x="429.47" y="111.5" >pt..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="808.2" y="213" width="17.4" height="15.0" fill="rgb(224,89,23)" rx="2" ry="2" />
+<text  x="811.24" y="223.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoSomeWork() (52 samples, 76.47%)</title><rect x="252.9" y="293" width="902.4" height="15.0" fill="rgb(208,193,6)" rx="2" ry="2" />
+<text  x="255.94" y="303.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoSomeWork()</text>
+</g>
+<g >
+<title>mach_msg_trap (1 samples, 1.47%)</title><rect x="686.8" y="37" width="17.3" height="15.0" fill="rgb(216,71,45)" rx="2" ry="2" />
+<text  x="689.76" y="47.5" ></text>
+</g>
+<g >
+<title>media::GpuMemoryBufferVideoFramePool::PoolImpl::VideoFrameCopyRequest&amp; base::circular_deque&lt;media::GpuMemoryBufferVideoFramePool::PoolImpl::VideoFrameCopyRequest&gt;::emplace_back&lt;scoped_refptr&lt;media::VideoFrame&gt;, base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;, bool&amp;&gt;(scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;, base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;&amp;&amp;, bool&amp;&amp;&amp;) (1 samples, 1.47%)</title><rect x="495.9" y="197" width="17.3" height="15.0" fill="rgb(228,32,53)" rx="2" ry="2" />
+<text  x="498.88" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoWorkImpl(base::sequence_manager::LazyNow*, bool*) (51 samples, 75.00%)</title><rect x="252.9" y="277" width="885.0" height="15.0" fill="rgb(222,22,15)" rx="2" ry="2" />
+<text  x="255.94" y="287.5" >base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl::DoWorkImpl(base::sequence_manager::LazyNow*, bool*)</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::GetDelayTillNextDelayedTask(base::sequence_manager::LazyNow*) const (1 samples, 1.47%)</title><rect x="808.2" y="245" width="17.4" height="15.0" fill="rgb(253,26,54)" rx="2" ry="2" />
+<text  x="811.24" y="255.5" ></text>
+</g>
+<g >
+<title>IPC::ParamTraits&lt;gfx::GpuFenceHandle&gt;::Write(base::Pickle*, gfx::GpuFenceHandle const&amp;) (1 samples, 1.47%)</title><rect x="617.4" y="165" width="17.3" height="15.0" fill="rgb(244,114,41)" rx="2" ry="2" />
+<text  x="620.35" y="175.5" ></text>
+</g>
+<g >
+<title>base::Lock::CheckHeldAndUnmark() (1 samples, 1.47%)</title><rect x="808.2" y="197" width="17.4" height="15.0" fill="rgb(233,220,42)" rx="2" ry="2" />
+<text  x="811.24" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::MaybeReclaimMemory() (1 samples, 1.47%)</title><rect x="1155.3" y="245" width="17.3" height="15.0" fill="rgb(235,153,12)" rx="2" ry="2" />
+<text  x="1158.29" y="255.5" ></text>
+</g>
+<g >
+<title>base::Value::MergeDictionary(base::Value const*) (2 samples, 2.94%)</title><rect x="530.6" y="213" width="34.7" height="15.0" fill="rgb(247,142,19)" rx="2" ry="2" />
+<text  x="533.59" y="223.5" >ba..</text>
+</g>
+<g >
+<title>all (68 samples, 100%)</title><rect x="10.0" y="469" width="1180.0" height="15.0" fill="rgb(251,80,12)" rx="2" ry="2" />
+<text  x="13.00" y="479.5" ></text>
+</g>
+<g >
+<title>thread_start (68 samples, 100.00%)</title><rect x="10.0" y="437" width="1180.0" height="15.0" fill="rgb(213,121,13)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >thread_start</text>
+</g>
+<g >
+<title>base::WaitableEvent::TimedWaitUntil(base::TimeTicks const&amp;) (11 samples, 16.18%)</title><rect x="62.1" y="277" width="190.8" height="15.0" fill="rgb(235,212,23)" rx="2" ry="2" />
+<text  x="65.06" y="287.5" >base::WaitableEvent::Tim..</text>
+</g>
+<g >
+<title>base::sequence_manager::TimeDomain::MoveReadyDelayedTasksToWorkQueues(base::sequence_manager::LazyNow*) (1 samples, 1.47%)</title><rect x="1016.5" y="197" width="17.3" height="15.0" fill="rgb(233,143,47)" rx="2" ry="2" />
+<text  x="1019.47" y="207.5" ></text>
+</g>
+<g >
+<title>base::internal::LockImpl::Unlock() (1 samples, 1.47%)</title><rect x="1033.8" y="165" width="17.4" height="15.0" fill="rgb(235,207,17)" rx="2" ry="2" />
+<text  x="1036.82" y="175.5" ></text>
+</g>
+<g >
+<title>base::SequenceToken::IsValid() const (1 samples, 1.47%)</title><rect x="825.6" y="213" width="17.3" height="15.0" fill="rgb(227,187,25)" rx="2" ry="2" />
+<text  x="828.59" y="223.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::PostImmediateTaskImpl(base::sequence_manager::internal::PostedTask, base::sequence_manager::internal::TaskQueueImpl::CurrentThread) (1 samples, 1.47%)</title><rect x="686.8" y="101" width="17.3" height="15.0" fill="rgb(206,24,39)" rx="2" ry="2" />
+<text  x="689.76" y="111.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::ReloadEmptyImmediateWorkQueue() (4 samples, 5.88%)</title><rect x="929.7" y="197" width="69.4" height="15.0" fill="rgb(218,116,28)" rx="2" ry="2" />
+<text  x="932.71" y="207.5" >base::s..</text>
+</g>
+<g >
+<title>media::VideoFrame::WrapNativeTextures(media::VideoPixelFormat, gpu::MailboxHolder const (&amp;) [4], base::OnceCallback&lt;void (gpu::SyncToken const&amp;)&gt;, gfx::Size const&amp;, gfx::Rect const&amp;, gfx::Size const&amp;, base::TimeDelta) (4 samples, 5.88%)</title><rect x="721.5" y="213" width="69.4" height="15.0" fill="rgb(220,226,31)" rx="2" ry="2" />
+<text  x="724.47" y="223.5" >media::..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::TaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (2 samples, 2.94%)</title><rect x="669.4" y="149" width="34.7" height="15.0" fill="rgb(232,204,10)" rx="2" ry="2" />
+<text  x="672.41" y="159.5" >ba..</text>
+</g>
+<g >
+<title>void base::internal::FunctorTraits&lt;void (media::GpuMemoryBufferVideoFramePool::PoolImpl::*)(scoped_refptr&lt;media::VideoFrame&gt;, media::GpuMemoryBufferVideoFramePool::PoolImpl::FrameResources*), void&gt;::Invoke&lt;void (media::GpuMemoryBufferVideoFramePool::PoolImpl::*)(scoped_refptr&lt;media::VideoFrame&gt;, media::GpuMemoryBufferVideoFramePool::PoolImpl::FrameResources*), scoped_refptr&lt;media::GpuMemoryBufferVideoFramePool::PoolImpl&gt;, scoped_refptr&lt;media::VideoFrame&gt;, media::GpuMemoryBufferVideoFramePool::PoolImpl::FrameResources*&gt;(void (media::GpuMemoryBufferVideoFramePool::PoolImpl::*)(scoped_refptr&lt;media::VideoFrame&gt;, media::GpuMemoryBufferVideoFramePool::PoolImpl::FrameResources*), scoped_refptr&lt;media::GpuMemoryBufferVideoFramePool::PoolImpl&gt;&amp;&amp;, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;, media::GpuMemoryBufferVideoFramePool::PoolImpl::FrameResources*&amp;&amp;) (16 samples, 23.53%)</title><rect x="530.6" y="245" width="277.6" height="15.0" fill="rgb(212,224,37)" rx="2" ry="2" />
+<text  x="533.59" y="255.5" >void base::internal::FunctorTraits&lt;vo..</text>
+</g>
+<g >
+<title>gpu::gles2::ShareGroup::IsLost() const (1 samples, 1.47%)</title><rect x="305.0" y="149" width="17.4" height="15.0" fill="rgb(233,33,25)" rx="2" ry="2" />
+<text  x="308.00" y="159.5" ></text>
+</g>
+<g >
+<title>base::ConditionVariable::Signal() (2 samples, 2.94%)</title><rect x="426.5" y="117" width="34.7" height="15.0" fill="rgb(233,58,1)" rx="2" ry="2" />
+<text  x="429.47" y="127.5" >ba..</text>
+</g>
+<g >
+<title>IPC::Message::~Message() (1 samples, 1.47%)</title><rect x="582.6" y="181" width="17.4" height="15.0" fill="rgb(205,22,1)" rx="2" ry="2" />
+<text  x="585.65" y="191.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (1 samples, 1.47%)</title><rect x="669.4" y="85" width="17.4" height="15.0" fill="rgb(219,91,33)" rx="2" ry="2" />
+<text  x="672.41" y="95.5" ></text>
+</g>
+<g >
+<title>base::internal::Invoker&lt;base::internal::BindState&lt;void (media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt; &gt;::*)(scoped_refptr&lt;media::VideoFrame&gt;), std::__Cr::unique_ptr&lt;media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt; &gt;, std::__Cr::default_delete&lt;media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt; &gt; &gt; &gt; &gt;, void (scoped_refptr&lt;media::VideoFrame&gt;)&gt;::RunOnce(base::internal::BindStateBase*, scoped_refptr&lt;media::VideoFrame&gt;&amp;&amp;) (2 samples, 2.94%)</title><rect x="669.4" y="197" width="34.7" height="15.0" fill="rgb(212,7,22)" rx="2" ry="2" />
+<text  x="672.41" y="207.5" >ba..</text>
+</g>
+<g >
+<title>base::RunLoop::RunWithTimeout(base::TimeDelta) (68 samples, 100.00%)</title><rect x="10.0" y="341" width="1180.0" height="15.0" fill="rgb(237,225,29)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" >base::RunLoop::RunWithTimeout(base::TimeDelta)</text>
+</g>
+<g >
+<title>mach_msg_trap (9 samples, 13.24%)</title><rect x="96.8" y="245" width="156.1" height="15.0" fill="rgb(228,52,44)" rx="2" ry="2" />
+<text  x="99.76" y="255.5" >mach_msg_trap</text>
+</g>
+<g >
+<title>media::VideoFrameLayout::Create(media::VideoPixelFormat, gfx::Size const&amp;) (1 samples, 1.47%)</title><rect x="738.8" y="197" width="17.4" height="15.0" fill="rgb(250,32,31)" rx="2" ry="2" />
+<text  x="741.82" y="207.5" ></text>
+</g>
+<g >
+<title>IPC::MessageT&lt;GpuChannelMsg_UpdateSharedImage_Meta, std::__Cr::tuple&lt;gpu::Mailbox, unsigned int, gfx::GpuFenceHandle&gt;, void&gt;::MessageT(IPC::Routing, gpu::Mailbox const&amp;, unsigned int const&amp;, gfx::GpuFenceHandle const&amp;) (2 samples, 2.94%)</title><rect x="600.0" y="181" width="34.7" height="15.0" fill="rgb(206,26,37)" rx="2" ry="2" />
+<text  x="603.00" y="191.5" >IP..</text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 1.47%)</title><rect x="1137.9" y="245" width="17.4" height="15.0" fill="rgb(211,129,39)" rx="2" ry="2" />
+<text  x="1140.94" y="255.5" ></text>
+</g>
+<g >
+<title>-[NSAutoreleasePool drain] (2 samples, 2.94%)</title><rect x="27.4" y="293" width="34.7" height="15.0" fill="rgb(241,130,25)" rx="2" ry="2" />
+<text  x="30.35" y="303.5" >-[..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::LazilyDeallocatedDeque&lt;base::sequence_manager::Task, &amp;(base::subtle::TimeTicksNowIgnoringOverride())&gt;::MaybeShrinkQueue() (1 samples, 1.47%)</title><rect x="964.4" y="149" width="17.4" height="15.0" fill="rgb(240,0,13)" rx="2" ry="2" />
+<text  x="967.41" y="159.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 1.47%)</title><rect x="1085.9" y="181" width="17.3" height="15.0" fill="rgb(213,149,30)" rx="2" ry="2" />
+<text  x="1088.88" y="191.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::GuardedTaskPoster::PostTask(base::sequence_manager::internal::PostedTask) (2 samples, 2.94%)</title><rect x="669.4" y="133" width="34.7" height="15.0" fill="rgb(232,28,36)" rx="2" ry="2" />
+<text  x="672.41" y="143.5" >ba..</text>
+</g>
+<g >
+<title>base::Thread::ThreadMain() (68 samples, 100.00%)</title><rect x="10.0" y="373" width="1180.0" height="15.0" fill="rgb(207,69,34)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >base::Thread::ThreadMain()</text>
+</g>
+<g >
+<title>IPC::ParamTraits&lt;base::FileDescriptor&gt;::Write(base::Pickle*, base::FileDescriptor const&amp;) (1 samples, 1.47%)</title><rect x="617.4" y="149" width="17.3" height="15.0" fill="rgb(222,162,30)" rx="2" ry="2" />
+<text  x="620.35" y="159.5" ></text>
+</g>
+<g >
+<title>std::__Cr::__wrap_iter&lt;std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt;*&gt; std::__Cr::vector&lt;std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt;, std::__Cr::allocator&lt;std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt; &gt; &gt;::emplace&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt;(std::__Cr::__wrap_iter&lt;std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt; &gt; const*&gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;&amp;&amp;, std::__Cr::unique_ptr&lt;base::Value, std::__Cr::default_delete&lt;base::Value&gt; &gt;&amp;&amp;) (1 samples, 1.47%)</title><rect x="790.9" y="165" width="17.3" height="15.0" fill="rgb(251,163,53)" rx="2" ry="2" />
+<text  x="793.88" y="175.5" ></text>
+</g>
+<g >
+<title>base::Thread::ThreadMain  0x644dc4 (68 samples, 100.00%)</title><rect x="10.0" y="453" width="1180.0" height="15.0" fill="rgb(253,179,20)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" >base::Thread::ThreadMain  0x644dc4</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="947.1" y="165" width="17.3" height="15.0" fill="rgb(242,143,6)" rx="2" ry="2" />
+<text  x="950.06" y="175.5" ></text>
+</g>
+<g >
+<title>base::Value::SetKey(std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;&amp;&amp;, base::Value&amp;&amp;) (1 samples, 1.47%)</title><rect x="790.9" y="197" width="17.3" height="15.0" fill="rgb(206,218,6)" rx="2" ry="2" />
+<text  x="793.88" y="207.5" ></text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 1.47%)</title><rect x="1068.5" y="149" width="17.4" height="15.0" fill="rgb(250,200,24)" rx="2" ry="2" />
+<text  x="1071.53" y="159.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (1 samples, 1.47%)</title><rect x="912.4" y="197" width="17.3" height="15.0" fill="rgb(247,195,40)" rx="2" ry="2" />
+<text  x="915.35" y="207.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::WorkQueue::TakeImmediateIncomingQueueTasks() (2 samples, 2.94%)</title><rect x="964.4" y="181" width="34.7" height="15.0" fill="rgb(236,52,44)" rx="2" ry="2" />
+<text  x="967.41" y="191.5" >ba..</text>
+</g>
+<g >
+<title>media::VideoFrameLayout::CreateWithStrides(media::VideoPixelFormat, gfx::Size const&amp;, std::__Cr::vector&lt;int, std::__Cr::allocator&lt;int&gt; &gt;) (1 samples, 1.47%)</title><rect x="738.8" y="181" width="17.4" height="15.0" fill="rgb(217,155,36)" rx="2" ry="2" />
+<text  x="741.82" y="191.5" ></text>
+</g>
+<g >
+<title>content::CategorizedWorkerPool::ClosureTask::~ClosureTask() (1 samples, 1.47%)</title><rect x="391.8" y="149" width="17.3" height="15.0" fill="rgb(221,79,31)" rx="2" ry="2" />
+<text  x="394.76" y="159.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::NotifyDidProcessTask(base::PendingTask const&amp;) (1 samples, 1.47%)</title><rect x="895.0" y="229" width="17.4" height="15.0" fill="rgb(212,26,25)" rx="2" ry="2" />
+<text  x="898.00" y="239.5" ></text>
+</g>
+<g >
+<title>void media::internal::TrampolineHelper&lt;base::OnceCallback&lt;void (scoped_refptr&lt;media::VideoFrame&gt;)&gt; &gt;::Run&lt;scoped_refptr&lt;media::VideoFrame&gt; &gt;(scoped_refptr&lt;media::VideoFrame&gt;) (2 samples, 2.94%)</title><rect x="669.4" y="181" width="34.7" height="15.0" fill="rgb(210,225,24)" rx="2" ry="2" />
+<text  x="672.41" y="191.5" >vo..</text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="1033.8" y="181" width="17.4" height="15.0" fill="rgb(235,25,48)" rx="2" ry="2" />
+<text  x="1036.82" y="191.5" ></text>
+</g>
+<g >
+<title>media::GpuMemoryBufferVideoFramePool::PoolImpl::CompleteCopyRequestAndMaybeStartNextCopy(scoped_refptr&lt;media::VideoFrame&gt;) (3 samples, 4.41%)</title><rect x="669.4" y="213" width="52.1" height="15.0" fill="rgb(205,156,33)" rx="2" ry="2" />
+<text  x="672.41" y="223.5" >media..</text>
+</g>
+<g >
+<title>base::sequence_manager::internal::SequenceManagerImpl::TakeTaskImpl() (13 samples, 19.12%)</title><rect x="912.4" y="229" width="225.5" height="15.0" fill="rgb(238,132,19)" rx="2" ry="2" />
+<text  x="915.35" y="239.5" >base::sequence_manager::inter..</text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 1.47%)</title><rect x="652.1" y="85" width="17.3" height="15.0" fill="rgb(207,183,53)" rx="2" ry="2" />
+<text  x="655.06" y="95.5" ></text>
+</g>
+<g >
+<title>void std::__Cr::allocator_traits&lt;std::__Cr::allocator&lt;unsigned char&gt; &gt;::__construct_range_forward&lt;base::CheckedRandomAccessIterator&lt;unsigned char const&gt;, unsigned char*&gt;(std::__Cr::allocator&lt;unsigned char&gt;&amp;, base::CheckedRandomAccessIterator&lt;unsigned char const&gt;, base::CheckedRandomAccessIterator&lt;unsigned char const&gt;, unsigned char*&amp;) (1 samples, 1.47%)</title><rect x="547.9" y="149" width="17.4" height="15.0" fill="rgb(231,123,53)" rx="2" ry="2" />
+<text  x="550.94" y="159.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="1120.6" y="197" width="17.3" height="15.0" fill="rgb(253,77,1)" rx="2" ry="2" />
+<text  x="1123.59" y="207.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (1 samples, 1.47%)</title><rect x="1137.9" y="261" width="17.4" height="15.0" fill="rgb(208,30,25)" rx="2" ry="2" />
+<text  x="1140.94" y="271.5" ></text>
+</g>
+<g >
+<title>media::VideoFrameMetadata::SetBoolean(media::VideoFrameMetadata::Key, bool) (1 samples, 1.47%)</title><rect x="790.9" y="213" width="17.3" height="15.0" fill="rgb(233,145,4)" rx="2" ry="2" />
+<text  x="793.88" y="223.5" ></text>
+</g>
+<g >
+<title>objc_removeAssociatedObjects (1 samples, 1.47%)</title><rect x="44.7" y="277" width="17.4" height="15.0" fill="rgb(225,119,20)" rx="2" ry="2" />
+<text  x="47.71" y="287.5" ></text>
+</g>
+<g >
+<title>base::sequence_manager::internal::TaskQueueImpl::main_thread_only() const (1 samples, 1.47%)</title><rect x="1068.5" y="181" width="17.4" height="15.0" fill="rgb(249,224,25)" rx="2" ry="2" />
+<text  x="1071.53" y="191.5" ></text>
+</g>
+<g >
+<title>base::(anonymous namespace)::ThreadFunc(void*) (68 samples, 100.00%)</title><rect x="10.0" y="389" width="1180.0" height="15.0" fill="rgb(218,227,19)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >base::(anonymous namespace)::ThreadFunc(void*)</text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 1.47%)</title><rect x="790.9" y="117" width="17.3" height="15.0" fill="rgb(235,33,13)" rx="2" ry="2" />
+<text  x="793.88" y="127.5" ></text>
+</g>
+</g>
+</svg>

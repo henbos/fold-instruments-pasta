@@ -1,0 +1,1121 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="646" onload="init(evt)" viewBox="0 0 1200 646" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="646.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="629" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="629" > </text>
+<g id="frames">
+<g >
+<title>operator new(unsigned long) (1 samples, 0.67%)</title><rect x="261.7" y="357" width="7.9" height="15.0" fill="rgb(227,51,3)" rx="2" ry="2" />
+<text  x="264.73" y="367.5" ></text>
+</g>
+<g >
+<title>_pthread_mutex_fairshare_lock_slow (1 samples, 0.67%)</title><rect x="891.1" y="325" width="7.8" height="15.0" fill="rgb(235,66,33)" rx="2" ry="2" />
+<text  x="894.07" y="335.5" ></text>
+</g>
+<g >
+<title>(anonymous namespace)::WebrtcTaskQueue::PostTask(std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;) (21 samples, 14.00%)</title><rect x="938.3" y="325" width="165.2" height="15.0" fill="rgb(245,191,42)" rx="2" ry="2" />
+<text  x="941.27" y="335.5" >(anonymous namespace)..</text>
+</g>
+<g >
+<title>blink::MediaStreamAudioSource::GetAudioParameters() const (1 samples, 0.67%)</title><rect x="914.7" y="325" width="7.8" height="15.0" fill="rgb(250,169,7)" rx="2" ry="2" />
+<text  x="917.67" y="335.5" ></text>
+</g>
+<g >
+<title>media::AudioParameters::IsBitstreamFormat() const (1 samples, 0.67%)</title><rect x="1182.1" y="469" width="7.9" height="15.0" fill="rgb(212,156,14)" rx="2" ry="2" />
+<text  x="1185.13" y="479.5" ></text>
+</g>
+<g >
+<title>malloc (1 samples, 0.67%)</title><rect x="324.7" y="341" width="7.8" height="15.0" fill="rgb(224,37,14)" rx="2" ry="2" />
+<text  x="327.67" y="351.5" ></text>
+</g>
+<g >
+<title>base::internal::Sequence::GetSortKey() const (1 samples, 0.67%)</title><rect x="1032.7" y="197" width="7.8" height="15.0" fill="rgb(211,140,39)" rx="2" ry="2" />
+<text  x="1035.67" y="207.5" ></text>
+</g>
+<g >
+<title>base::TaskToken::GetForCurrentThread() (1 samples, 0.67%)</title><rect x="190.9" y="421" width="7.9" height="15.0" fill="rgb(211,171,28)" rx="2" ry="2" />
+<text  x="193.93" y="431.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (2 samples, 1.33%)</title><rect x="1056.3" y="165" width="15.7" height="15.0" fill="rgb(248,168,27)" rx="2" ry="2" />
+<text  x="1059.27" y="175.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::EndUnusedPeriod() (2 samples, 1.33%)</title><rect x="1056.3" y="181" width="15.7" height="15.0" fill="rgb(206,31,0)" rx="2" ry="2" />
+<text  x="1059.27" y="191.5" ></text>
+</g>
+<g >
+<title>base::DefaultTickClock::NowTicks() const (1 samples, 0.67%)</title><rect x="1001.2" y="229" width="7.9" height="15.0" fill="rgb(205,108,33)" rx="2" ry="2" />
+<text  x="1004.20" y="239.5" ></text>
+</g>
+<g >
+<title>all (150 samples, 100%)</title><rect x="10.0" y="597" width="1180.0" height="15.0" fill="rgb(253,19,31)" rx="2" ry="2" />
+<text  x="13.00" y="607.5" ></text>
+</g>
+<g >
+<title>webrtc::StatisticsCalculator::IncreaseCounter(unsigned long, int) (1 samples, 0.67%)</title><rect x="828.1" y="293" width="7.9" height="15.0" fill="rgb(245,25,15)" rx="2" ry="2" />
+<text  x="831.13" y="303.5" ></text>
+</g>
+<g >
+<title>webrtc::PostDecodeVad::Update(short*, unsigned long, webrtc::AudioDecoder::SpeechType, bool, int) (1 samples, 0.67%)</title><rect x="820.3" y="293" width="7.8" height="15.0" fill="rgb(229,22,1)" rx="2" ry="2" />
+<text  x="823.27" y="303.5" ></text>
+</g>
+<g >
+<title>webrtc::NetEqImpl::TargetDelayMs() const (1 samples, 0.67%)</title><rect x="891.1" y="357" width="7.8" height="15.0" fill="rgb(243,163,49)" rx="2" ry="2" />
+<text  x="894.07" y="367.5" ></text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::AssertNoLockHeldOnCurrentThread() (1 samples, 0.67%)</title><rect x="1016.9" y="213" width="7.9" height="15.0" fill="rgb(245,123,43)" rx="2" ry="2" />
+<text  x="1019.93" y="223.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioFrame::mutable_data() (1 samples, 0.67%)</title><rect x="1150.7" y="341" width="7.8" height="15.0" fill="rgb(221,206,41)" rx="2" ry="2" />
+<text  x="1153.67" y="351.5" ></text>
+</g>
+<g >
+<title>void base::internal::ThreadGroupImpl::ScopedWorkersExecutor::WorkerContainer::ForEachWorker&lt;base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)&gt;(base::internal::ThreadGroupImpl::ScopedWorkersExecutor::FlushImpl()::'lambda'(base::internal::WorkerThread*)) (3 samples, 2.00%)</title><rect x="1072.0" y="213" width="23.6" height="15.0" fill="rgb(242,136,25)" rx="2" ry="2" />
+<text  x="1075.00" y="223.5" >v..</text>
+</g>
+<g >
+<title>std::__Cr::back_insert_iterator&lt;std::__Cr::vector&lt;int, std::__Cr::allocator&lt;int&gt; &gt; &gt;::operator=(int&amp;&amp;) (1 samples, 0.67%)</title><rect x="261.7" y="373" width="7.9" height="15.0" fill="rgb(235,208,54)" rx="2" ry="2" />
+<text  x="264.73" y="383.5" ></text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (1 samples, 0.67%)</title><rect x="324.7" y="261" width="7.8" height="15.0" fill="rgb(227,100,21)" rx="2" ry="2" />
+<text  x="327.67" y="271.5" ></text>
+</g>
+<g >
+<title>webrtc::SyncBuffer::GetNextAudioInterleaved(unsigned long, webrtc::AudioFrame*) (1 samples, 0.67%)</title><rect x="836.0" y="293" width="7.9" height="15.0" fill="rgb(245,73,39)" rx="2" ry="2" />
+<text  x="839.00" y="303.5" ></text>
+</g>
+<g >
+<title>base::circular_deque&lt;base::internal::Task&gt;::front() const (1 samples, 0.67%)</title><rect x="1032.7" y="181" width="7.8" height="15.0" fill="rgb(250,150,36)" rx="2" ry="2" />
+<text  x="1035.67" y="191.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioMultiVector::ReadInterleavedFromIndex(unsigned long, unsigned long, short*) const (1 samples, 0.67%)</title><rect x="836.0" y="277" width="7.9" height="15.0" fill="rgb(241,5,30)" rx="2" ry="2" />
+<text  x="839.00" y="287.5" ></text>
+</g>
+<g >
+<title>base::CancelableSyncSocket::Send(void const*, unsigned long) (7 samples, 4.67%)</title><rect x="17.9" y="485" width="55.0" height="15.0" fill="rgb(224,53,33)" rx="2" ry="2" />
+<text  x="20.87" y="495.5" >base:..</text>
+</g>
+<g >
+<title>webrtc::AudioDecoderOpusImpl::DecodeInternal(unsigned char const*, unsigned long, int, short*, webrtc::AudioDecoder::SpeechType*) (40 samples, 26.67%)</title><rect x="403.3" y="229" width="314.7" height="15.0" fill="rgb(250,196,25)" rx="2" ry="2" />
+<text  x="406.33" y="239.5" >webrtc::AudioDecoderOpusImpl::DecodeIntern..</text>
+</g>
+<g >
+<title>rtc::TaskQueue::PostTask(std::__Cr::unique_ptr&lt;webrtc::QueuedTask, std::__Cr::default_delete&lt;webrtc::QueuedTask&gt; &gt;) (21 samples, 14.00%)</title><rect x="938.3" y="341" width="165.2" height="15.0" fill="rgb(207,193,33)" rx="2" ry="2" />
+<text  x="941.27" y="351.5" >rtc::TaskQueue::PostT..</text>
+</g>
+<g >
+<title>webrtc::Packet::~Packet() (2 samples, 1.33%)</title><rect x="718.0" y="261" width="15.7" height="15.0" fill="rgb(247,185,7)" rx="2" ry="2" />
+<text  x="721.00" y="271.5" ></text>
+</g>
+<g >
+<title>opus_fft_impl (4 samples, 2.67%)</title><rect x="458.4" y="101" width="31.5" height="15.0" fill="rgb(212,121,30)" rx="2" ry="2" />
+<text  x="461.40" y="111.5" >op..</text>
+</g>
+<g >
+<title>tiny_size (1 samples, 0.67%)</title><rect x="788.8" y="229" width="7.9" height="15.0" fill="rgb(236,109,47)" rx="2" ry="2" />
+<text  x="791.80" y="239.5" ></text>
+</g>
+<g >
+<title>blink::WebRtcAudioRenderer::SourceCallback(int, media::AudioBus*) (126 samples, 84.00%)</title><rect x="175.2" y="453" width="991.2" height="15.0" fill="rgb(230,166,5)" rx="2" ry="2" />
+<text  x="178.20" y="463.5" >blink::WebRtcAudioRenderer::SourceCallback(int, media::AudioBus*)</text>
+</g>
+<g >
+<title>tiny_malloc_should_clear (2 samples, 1.33%)</title><rect x="285.3" y="277" width="15.8" height="15.0" fill="rgb(224,167,54)" rx="2" ry="2" />
+<text  x="288.33" y="287.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioMultiVector::Channels() const (2 samples, 1.33%)</title><rect x="387.6" y="277" width="15.7" height="15.0" fill="rgb(231,125,13)" rx="2" ry="2" />
+<text  x="390.60" y="287.5" ></text>
+</g>
+<g >
+<title>media::AudioDeviceThread::ThreadMain() (150 samples, 100.00%)</title><rect x="10.0" y="501" width="1180.0" height="15.0" fill="rgb(245,38,30)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" >media::AudioDeviceThread::ThreadMain()</text>
+</g>
+<g >
+<title>opus_decode_frame (36 samples, 24.00%)</title><rect x="419.1" y="165" width="283.2" height="15.0" fill="rgb(227,12,25)" rx="2" ry="2" />
+<text  x="422.07" y="175.5" >opus_decode_frame</text>
+</g>
+<g >
+<title>base::internal::ThreadGroup::GetNumQueuedCanRunBestEffortTaskSources() const (1 samples, 0.67%)</title><rect x="1040.5" y="197" width="7.9" height="15.0" fill="rgb(207,91,13)" rx="2" ry="2" />
+<text  x="1043.53" y="207.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioFrameOperations::UpmixChannels(unsigned long, webrtc::AudioFrame*) (5 samples, 3.33%)</title><rect x="1119.2" y="357" width="39.3" height="15.0" fill="rgb(227,41,22)" rx="2" ry="2" />
+<text  x="1122.20" y="367.5" >web..</text>
+</g>
+<g >
+<title>base::Lock::CheckUnheldAndMark() (1 samples, 0.67%)</title><rect x="183.1" y="421" width="7.8" height="15.0" fill="rgb(224,138,43)" rx="2" ry="2" />
+<text  x="186.07" y="431.5" ></text>
+</g>
+<g >
+<title>webrtc::OpusFrame::Decode(rtc::ArrayView&lt;short, -4711l&gt;) const (40 samples, 26.67%)</title><rect x="403.3" y="261" width="314.7" height="15.0" fill="rgb(225,20,2)" rx="2" ry="2" />
+<text  x="406.33" y="271.5" >webrtc::OpusFrame::Decode(rtc::ArrayView&lt;s..</text>
+</g>
+<g >
+<title>base::subtle::RefCountedThreadSafeBase::AddRef() const (1 samples, 0.67%)</title><rect x="1095.6" y="309" width="7.9" height="15.0" fill="rgb(214,103,50)" rx="2" ry="2" />
+<text  x="1098.60" y="319.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::PushTaskSourceAndWakeUpWorkers(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (11 samples, 7.33%)</title><rect x="1009.1" y="245" width="86.5" height="15.0" fill="rgb(216,1,54)" rx="2" ry="2" />
+<text  x="1012.07" y="255.5" >base::inte..</text>
+</g>
+<g >
+<title>szone_malloc_should_clear (1 samples, 0.67%)</title><rect x="324.7" y="277" width="7.8" height="15.0" fill="rgb(217,189,19)" rx="2" ry="2" />
+<text  x="327.67" y="287.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 0.67%)</title><rect x="836.0" y="245" width="7.9" height="15.0" fill="rgb(239,107,10)" rx="2" ry="2" />
+<text  x="839.00" y="255.5" ></text>
+</g>
+<g >
+<title>webrtc::TimestampScaler::ToExternal(unsigned int) const (1 samples, 0.67%)</title><rect x="851.7" y="293" width="7.9" height="15.0" fill="rgb(241,43,16)" rx="2" ry="2" />
+<text  x="854.73" y="303.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioVector::CopyTo(unsigned long, unsigned long, short*) const (1 samples, 0.67%)</title><rect x="836.0" y="261" width="7.9" height="15.0" fill="rgb(245,228,32)" rx="2" ry="2" />
+<text  x="839.00" y="271.5" ></text>
+</g>
+<g >
+<title>quant_partition (4 samples, 2.67%)</title><rect x="560.7" y="85" width="31.4" height="15.0" fill="rgb(223,114,10)" rx="2" ry="2" />
+<text  x="563.67" y="95.5" >qu..</text>
+</g>
+<g >
+<title>exp_rotation (1 samples, 0.67%)</title><rect x="552.8" y="69" width="7.9" height="15.0" fill="rgb(251,121,39)" rx="2" ry="2" />
+<text  x="555.80" y="79.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioMixerImpl::Mix(unsigned long, webrtc::AudioFrame*) (117 samples, 78.00%)</title><rect x="238.1" y="405" width="920.4" height="15.0" fill="rgb(225,212,44)" rx="2" ry="2" />
+<text  x="241.13" y="415.5" >webrtc::AudioMixerImpl::Mix(unsigned long, webrtc::AudioFrame*)</text>
+</g>
+<g >
+<title>webrtc::AudioVector::Empty() const (1 samples, 0.67%)</title><rect x="812.4" y="277" width="7.9" height="15.0" fill="rgb(249,75,7)" rx="2" ry="2" />
+<text  x="815.40" y="287.5" ></text>
+</g>
+<g >
+<title>silk_resampler (6 samples, 4.00%)</title><rect x="655.1" y="133" width="47.2" height="15.0" fill="rgb(234,147,46)" rx="2" ry="2" />
+<text  x="658.07" y="143.5" >silk..</text>
+</g>
+<g >
+<title>webrtc::voe::AudioLevel::ComputeLevel(webrtc::AudioFrame const&amp;, double) (1 samples, 0.67%)</title><rect x="1111.3" y="357" width="7.9" height="15.0" fill="rgb(240,153,24)" rx="2" ry="2" />
+<text  x="1114.33" y="367.5" ></text>
+</g>
+<g >
+<title>base::internal::PriorityQueue::Push(base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (2 samples, 1.33%)</title><rect x="1024.8" y="213" width="15.7" height="15.0" fill="rgb(209,26,51)" rx="2" ry="2" />
+<text  x="1027.80" y="223.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (2 samples, 1.33%)</title><rect x="285.3" y="341" width="15.8" height="15.0" fill="rgb(234,191,52)" rx="2" ry="2" />
+<text  x="288.33" y="351.5" ></text>
+</g>
+<g >
+<title>base::Histogram::ranges(unsigned int) const (1 samples, 0.67%)</title><rect x="316.8" y="341" width="7.9" height="15.0" fill="rgb(253,173,50)" rx="2" ry="2" />
+<text  x="319.80" y="351.5" ></text>
+</g>
+<g >
+<title>webrtc::FrameCombiner::Combine(std::__Cr::vector&lt;webrtc::AudioFrame*, std::__Cr::allocator&lt;webrtc::AudioFrame*&gt; &gt; const&amp;, unsigned long, int, unsigned long, webrtc::AudioFrame*) (5 samples, 3.33%)</title><rect x="1119.2" y="389" width="39.3" height="15.0" fill="rgb(218,41,42)" rx="2" ry="2" />
+<text  x="1122.20" y="399.5" >web..</text>
+</g>
+<g >
+<title>blink::WebRtcAudioRenderer::CurrentThreadIsRenderingThread() (1 samples, 0.67%)</title><rect x="222.4" y="421" width="7.9" height="15.0" fill="rgb(217,21,26)" rx="2" ry="2" />
+<text  x="225.40" y="431.5" ></text>
+</g>
+<g >
+<title>webrtc::(anonymous namespace)::AudioCodingModuleImpl::ReceiveCodec() const (4 samples, 2.67%)</title><rect x="859.6" y="357" width="31.5" height="15.0" fill="rgb(254,90,10)" rx="2" ry="2" />
+<text  x="862.60" y="367.5" >we..</text>
+</g>
+<g >
+<title>silk_resampler_private_IIR_FIR (6 samples, 4.00%)</title><rect x="655.1" y="117" width="47.2" height="15.0" fill="rgb(232,172,47)" rx="2" ry="2" />
+<text  x="658.07" y="127.5" >silk..</text>
+</g>
+<g >
+<title>_platform_strlen (1 samples, 0.67%)</title><rect x="175.2" y="421" width="7.9" height="15.0" fill="rgb(241,215,37)" rx="2" ry="2" />
+<text  x="178.20" y="431.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (2 samples, 1.33%)</title><rect x="285.3" y="373" width="15.8" height="15.0" fill="rgb(235,110,26)" rx="2" ry="2" />
+<text  x="288.33" y="383.5" ></text>
+</g>
+<g >
+<title>webrtc::DecisionLogic::FilterBufferLevel(unsigned long) (1 samples, 0.67%)</title><rect x="765.2" y="261" width="7.9" height="15.0" fill="rgb(250,151,34)" rx="2" ry="2" />
+<text  x="768.20" y="271.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.67%)</title><rect x="324.7" y="293" width="7.8" height="15.0" fill="rgb(228,72,23)" rx="2" ry="2" />
+<text  x="327.67" y="303.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioVector::Size() const (1 samples, 0.67%)</title><rect x="804.5" y="261" width="7.9" height="15.0" fill="rgb(211,210,42)" rx="2" ry="2" />
+<text  x="807.53" y="271.5" ></text>
+</g>
+<g >
+<title>webrtc::RtcEventAudioPlayout::RtcEventAudioPlayout(unsigned int) (1 samples, 0.67%)</title><rect x="930.4" y="357" width="7.9" height="15.0" fill="rgb(254,62,16)" rx="2" ry="2" />
+<text  x="933.40" y="367.5" ></text>
+</g>
+<g >
+<title>silk_decode_signs (1 samples, 0.67%)</title><rect x="647.2" y="101" width="7.9" height="15.0" fill="rgb(229,197,30)" rx="2" ry="2" />
+<text  x="650.20" y="111.5" ></text>
+</g>
+<g >
+<title>webrtc::NetEqImpl::GetDecision(webrtc::Operations*, std::__Cr::list&lt;webrtc::Packet, std::__Cr::allocator&lt;webrtc::Packet&gt; &gt;*, webrtc::DtmfEvent*, bool*, absl::optional&lt;webrtc::Operations&gt;) (10 samples, 6.67%)</title><rect x="733.7" y="293" width="78.7" height="15.0" fill="rgb(238,134,28)" rx="2" ry="2" />
+<text  x="736.73" y="303.5" >webrtc::N..</text>
+</g>
+<g >
+<title>std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;::basic_string(std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; const&amp;) (1 samples, 0.67%)</title><rect x="883.2" y="309" width="7.9" height="15.0" fill="rgb(249,92,32)" rx="2" ry="2" />
+<text  x="886.20" y="319.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThread::WakeUp() (3 samples, 2.00%)</title><rect x="1072.0" y="197" width="23.6" height="15.0" fill="rgb(242,42,2)" rx="2" ry="2" />
+<text  x="1075.00" y="207.5" >b..</text>
+</g>
+<g >
+<title>webrtc::AudioTransportImpl::PullRenderData(int, int, unsigned long, unsigned long, void*, long long*, long long*) (119 samples, 79.33%)</title><rect x="230.3" y="421" width="936.1" height="15.0" fill="rgb(242,52,25)" rx="2" ry="2" />
+<text  x="233.27" y="431.5" >webrtc::AudioTransportImpl::PullRenderData(int, int, unsigned long, unsigned long, void*, long long*, long long*)</text>
+</g>
+<g >
+<title>webrtc::PacketBuffer::GetNextPacket() (1 samples, 0.67%)</title><rect x="788.8" y="261" width="7.9" height="15.0" fill="rgb(227,124,27)" rx="2" ry="2" />
+<text  x="791.80" y="271.5" ></text>
+</g>
+<g >
+<title>base::Lock::AssertAcquired() const (1 samples, 0.67%)</title><rect x="906.8" y="293" width="7.9" height="15.0" fill="rgb(236,6,10)" rx="2" ry="2" />
+<text  x="909.80" y="303.5" ></text>
+</g>
+<g >
+<title>webrtc::OpusFrame::~OpusFrame() (2 samples, 1.33%)</title><rect x="718.0" y="245" width="15.7" height="15.0" fill="rgb(238,9,8)" rx="2" ry="2" />
+<text  x="721.00" y="255.5" ></text>
+</g>
+<g >
+<title>pthread_self (1 samples, 0.67%)</title><rect x="183.1" y="405" width="7.8" height="15.0" fill="rgb(209,193,16)" rx="2" ry="2" />
+<text  x="186.07" y="415.5" ></text>
+</g>
+<g >
+<title>media::AudioDeviceThread::ThreadMain  0x65942f (150 samples, 100.00%)</title><rect x="10.0" y="581" width="1180.0" height="15.0" fill="rgb(223,191,9)" rx="2" ry="2" />
+<text  x="13.00" y="591.5" >media::AudioDeviceThread::ThreadMain  0x65942f</text>
+</g>
+<g >
+<title>non-virtual thunk to blink::PeerConnectionRemoteAudioSource::OnData(void const*, int, int, unsigned long, unsigned long) (1 samples, 0.67%)</title><rect x="922.5" y="341" width="7.9" height="15.0" fill="rgb(244,126,25)" rx="2" ry="2" />
+<text  x="925.53" y="351.5" ></text>
+</g>
+<g >
+<title>webrtc::(anonymous namespace)::AudioCodingModuleImpl::PlayoutData10Ms(int, webrtc::AudioFrame*, bool*) (66 samples, 44.00%)</title><rect x="340.4" y="357" width="519.2" height="15.0" fill="rgb(220,188,35)" rx="2" ry="2" />
+<text  x="343.40" y="367.5" >webrtc::(anonymous namespace)::AudioCodingModuleImpl::PlayoutData10Ms(i..</text>
+</g>
+<g >
+<title>rtc::CriticalSection::Enter() const (1 samples, 0.67%)</title><rect x="891.1" y="341" width="7.8" height="15.0" fill="rgb(235,98,46)" rx="2" ry="2" />
+<text  x="894.07" y="351.5" ></text>
+</g>
+<g >
+<title>quant_all_bands (8 samples, 5.33%)</title><rect x="529.2" y="133" width="62.9" height="15.0" fill="rgb(236,127,7)" rx="2" ry="2" />
+<text  x="532.20" y="143.5" >quant_..</text>
+</g>
+<g >
+<title>webrtc::NetEqImpl::GetAudio(webrtc::AudioFrame*, bool*, absl::optional&lt;webrtc::Operations&gt;) (65 samples, 43.33%)</title><rect x="348.3" y="325" width="511.3" height="15.0" fill="rgb(207,145,49)" rx="2" ry="2" />
+<text  x="351.27" y="335.5" >webrtc::NetEqImpl::GetAudio(webrtc::AudioFrame*, bool*, absl::optional..</text>
+</g>
+<g >
+<title>media::AudioOutputDeviceThreadCallback::Process(unsigned int) (131 samples, 87.33%)</title><rect x="159.5" y="485" width="1030.5" height="15.0" fill="rgb(218,129,48)" rx="2" ry="2" />
+<text  x="162.47" y="495.5" >media::AudioOutputDeviceThreadCallback::Process(unsigned int)</text>
+</g>
+<g >
+<title>content::WebRtcAudioDeviceImpl::RenderData(media::AudioBus*, int, int, base::TimeDelta*) (123 samples, 82.00%)</title><rect x="198.8" y="437" width="967.6" height="15.0" fill="rgb(239,17,1)" rx="2" ry="2" />
+<text  x="201.80" y="447.5" >content::WebRtcAudioDeviceImpl::RenderData(media::AudioBus*, int, int, base::TimeDelta*)</text>
+</g>
+<g >
+<title>webrtc::AudioFrame::data() const (3 samples, 2.00%)</title><rect x="1127.1" y="341" width="23.6" height="15.0" fill="rgb(223,7,43)" rx="2" ry="2" />
+<text  x="1130.07" y="351.5" >w..</text>
+</g>
+<g >
+<title>webrtc::acm2::AcmReceiver::LastDecoder() const (4 samples, 2.67%)</title><rect x="859.6" y="341" width="31.5" height="15.0" fill="rgb(211,221,41)" rx="2" ry="2" />
+<text  x="862.60" y="351.5" >we..</text>
+</g>
+<g >
+<title>webrtc::NetEqImpl::ExtractPackets(unsigned long, std::__Cr::list&lt;webrtc::Packet, std::__Cr::allocator&lt;webrtc::Packet&gt; &gt;*) (1 samples, 0.67%)</title><rect x="788.8" y="277" width="7.9" height="15.0" fill="rgb(206,73,6)" rx="2" ry="2" />
+<text  x="791.80" y="287.5" ></text>
+</g>
+<g >
+<title>void std::__Cr::__sort&lt;bool (*&amp;)(webrtc::(anonymous namespace)::SourceFrame const&amp;, webrtc::(anonymous namespace)::SourceFrame const&amp;), webrtc::(anonymous namespace)::SourceFrame*&gt;(webrtc::(anonymous namespace)::SourceFrame*, webrtc::(anonymous namespace)::SourceFrame*, bool (*&amp;)(webrtc::(anonymous namespace)::SourceFrame const&amp;, webrtc::(anonymous namespace)::SourceFrame const&amp;)) (2 samples, 1.33%)</title><rect x="301.1" y="373" width="15.7" height="15.0" fill="rgb(223,162,41)" rx="2" ry="2" />
+<text  x="304.07" y="383.5" ></text>
+</g>
+<g >
+<title>opus_pcm_soft_clip (1 samples, 0.67%)</title><rect x="702.3" y="165" width="7.8" height="15.0" fill="rgb(243,126,2)" rx="2" ry="2" />
+<text  x="705.27" y="175.5" ></text>
+</g>
+<g >
+<title>webrtc::metrics::HistogramAdd(webrtc::metrics::Histogram*, int) (1 samples, 0.67%)</title><rect x="1103.5" y="357" width="7.8" height="15.0" fill="rgb(227,3,36)" rx="2" ry="2" />
+<text  x="1106.47" y="367.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioVector::Clear() (1 samples, 0.67%)</title><rect x="379.7" y="277" width="7.9" height="15.0" fill="rgb(220,191,13)" rx="2" ry="2" />
+<text  x="382.73" y="287.5" ></text>
+</g>
+<g >
+<title>std::__Cr::vector&lt;webrtc::RtpPacketInfo, std::__Cr::allocator&lt;webrtc::RtpPacketInfo&gt; &gt;::vector(std::__Cr::vector&lt;webrtc::RtpPacketInfo, std::__Cr::allocator&lt;webrtc::RtpPacketInfo&gt; &gt; const&amp;) (1 samples, 0.67%)</title><rect x="364.0" y="293" width="7.9" height="15.0" fill="rgb(208,196,33)" rx="2" ry="2" />
+<text  x="367.00" y="303.5" ></text>
+</g>
+<g >
+<title>rtc::CriticalSection::Enter() const (1 samples, 0.67%)</title><rect x="332.5" y="357" width="7.9" height="15.0" fill="rgb(232,5,48)" rx="2" ry="2" />
+<text  x="335.53" y="367.5" ></text>
+</g>
+<g >
+<title>webrtc::NetEqImpl::GetAudioInternal(webrtc::AudioFrame*, bool*, absl::optional&lt;webrtc::Operations&gt;) (64 samples, 42.67%)</title><rect x="356.1" y="309" width="503.5" height="15.0" fill="rgb(226,2,41)" rx="2" ry="2" />
+<text  x="359.13" y="319.5" >webrtc::NetEqImpl::GetAudioInternal(webrtc::AudioFrame*, bool*, absl:..</text>
+</g>
+<g >
+<title>webrtc::AudioMixerImpl::CalculateOutputFrequency() (5 samples, 3.33%)</title><rect x="238.1" y="389" width="39.4" height="15.0" fill="rgb(210,206,28)" rx="2" ry="2" />
+<text  x="241.13" y="399.5" >web..</text>
+</g>
+<g >
+<title>base::internal::IntrusiveHeap&lt;base::internal::PriorityQueue::TaskSourceAndSortKey&gt;::MoveHoleUpAndFillWithElement(unsigned long, base::internal::PriorityQueue::TaskSourceAndSortKey&amp;&amp;) (1 samples, 0.67%)</title><rect x="1024.8" y="197" width="7.9" height="15.0" fill="rgb(240,201,31)" rx="2" ry="2" />
+<text  x="1027.80" y="207.5" ></text>
+</g>
+<g >
+<title>silk_decode_core (3 samples, 2.00%)</title><rect x="600.0" y="117" width="23.6" height="15.0" fill="rgb(225,227,8)" rx="2" ry="2" />
+<text  x="603.00" y="127.5" >s..</text>
+</g>
+<g >
+<title>webrtc::RemixFrame(unsigned long, webrtc::AudioFrame*) (5 samples, 3.33%)</title><rect x="1119.2" y="373" width="39.3" height="15.0" fill="rgb(244,63,15)" rx="2" ry="2" />
+<text  x="1122.20" y="383.5" >web..</text>
+</g>
+<g >
+<title>base::internal::CheckedLockImpl::Acquire() (2 samples, 1.33%)</title><rect x="985.5" y="229" width="15.7" height="15.0" fill="rgb(242,91,27)" rx="2" ry="2" />
+<text  x="988.47" y="239.5" ></text>
+</g>
+<g >
+<title>quant_band (7 samples, 4.67%)</title><rect x="537.1" y="117" width="55.0" height="15.0" fill="rgb(252,194,16)" rx="2" ry="2" />
+<text  x="540.07" y="127.5" >quant..</text>
+</g>
+<g >
+<title>free (1 samples, 0.67%)</title><rect x="356.1" y="293" width="7.9" height="15.0" fill="rgb(223,2,27)" rx="2" ry="2" />
+<text  x="359.13" y="303.5" ></text>
+</g>
+<g >
+<title>operator delete[](void*) (1 samples, 0.67%)</title><rect x="725.9" y="229" width="7.8" height="15.0" fill="rgb(210,166,27)" rx="2" ry="2" />
+<text  x="728.87" y="239.5" ></text>
+</g>
+<g >
+<title>base::internal::WorkerThreadStack::Pop() (3 samples, 2.00%)</title><rect x="1048.4" y="197" width="23.6" height="15.0" fill="rgb(246,229,13)" rx="2" ry="2" />
+<text  x="1051.40" y="207.5" >b..</text>
+</g>
+<g >
+<title>webrtc::NetEqImpl::Decode(std::__Cr::list&lt;webrtc::Packet, std::__Cr::allocator&lt;webrtc::Packet&gt; &gt;*, webrtc::Operations*, int*, webrtc::AudioDecoder::SpeechType*) (44 samples, 29.33%)</title><rect x="387.6" y="293" width="346.1" height="15.0" fill="rgb(205,226,49)" rx="2" ry="2" />
+<text  x="390.60" y="303.5" >webrtc::NetEqImpl::Decode(std::__Cr::list&lt;webr..</text>
+</g>
+<g >
+<title>base::ThreadLocalStorage::Slot::Get() const (1 samples, 0.67%)</title><rect x="190.9" y="405" width="7.9" height="15.0" fill="rgb(246,224,13)" rx="2" ry="2" />
+<text  x="193.93" y="415.5" ></text>
+</g>
+<g >
+<title>webrtc::SyncBuffer::PushBack(webrtc::AudioMultiVector const&amp;) (1 samples, 0.67%)</title><rect x="843.9" y="293" width="7.8" height="15.0" fill="rgb(221,195,25)" rx="2" ry="2" />
+<text  x="846.87" y="303.5" ></text>
+</g>
+<g >
+<title>base::(anonymous namespace)::ThreadFunc(void*) (150 samples, 100.00%)</title><rect x="10.0" y="517" width="1180.0" height="15.0" fill="rgb(237,197,18)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >base::(anonymous namespace)::ThreadFunc(void*)</text>
+</g>
+<g >
+<title>base::HistogramBase::CheckName(base::BasicStringPiece&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt; const&amp;) const (1 samples, 0.67%)</title><rect x="175.2" y="437" width="7.9" height="15.0" fill="rgb(206,116,32)" rx="2" ry="2" />
+<text  x="178.20" y="447.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioDecoder::Decode(unsigned char const*, unsigned long, int, unsigned long, short*, webrtc::AudioDecoder::SpeechType*) (40 samples, 26.67%)</title><rect x="403.3" y="245" width="314.7" height="15.0" fill="rgb(217,9,48)" rx="2" ry="2" />
+<text  x="406.33" y="255.5" >webrtc::AudioDecoder::Decode(unsigned char..</text>
+</g>
+<g >
+<title>base::ReadFromFD(int, char*, unsigned long) (11 samples, 7.33%)</title><rect x="72.9" y="469" width="86.6" height="15.0" fill="rgb(251,47,10)" rx="2" ry="2" />
+<text  x="75.93" y="479.5" >base::Read..</text>
+</g>
+<g >
+<title>malloc (2 samples, 1.33%)</title><rect x="285.3" y="357" width="15.8" height="15.0" fill="rgb(208,208,29)" rx="2" ry="2" />
+<text  x="288.33" y="367.5" ></text>
+</g>
+<g >
+<title>szone_malloc_should_clear (2 samples, 1.33%)</title><rect x="285.3" y="293" width="15.8" height="15.0" fill="rgb(213,119,11)" rx="2" ry="2" />
+<text  x="288.33" y="303.5" ></text>
+</g>
+<g >
+<title>webrtc::voe::(anonymous namespace)::ChannelReceive::GetAudioFrameWithInfo(int, webrtc::AudioFrame*) (102 samples, 68.00%)</title><rect x="316.8" y="373" width="802.4" height="15.0" fill="rgb(209,182,20)" rx="2" ry="2" />
+<text  x="319.80" y="383.5" >webrtc::voe::(anonymous namespace)::ChannelReceive::GetAudioFrameWithInfo(int, webrtc::AudioFrame*)</text>
+</g>
+<g >
+<title>base::internal::CallbackBase::~CallbackBase() (1 samples, 0.67%)</title><rect x="954.0" y="293" width="7.9" height="15.0" fill="rgb(231,130,15)" rx="2" ry="2" />
+<text  x="957.00" y="303.5" ></text>
+</g>
+<g >
+<title>silk_Decode (14 samples, 9.33%)</title><rect x="592.1" y="149" width="110.2" height="15.0" fill="rgb(225,81,30)" rx="2" ry="2" />
+<text  x="595.13" y="159.5" >silk_Decode</text>
+</g>
+<g >
+<title>alg_unquant (3 samples, 2.00%)</title><rect x="568.5" y="69" width="23.6" height="15.0" fill="rgb(229,29,16)" rx="2" ry="2" />
+<text  x="571.53" y="79.5" >a..</text>
+</g>
+<g >
+<title>clt_mdct_backward_c (4 samples, 2.67%)</title><rect x="458.4" y="117" width="31.5" height="15.0" fill="rgb(235,153,26)" rx="2" ry="2" />
+<text  x="461.40" y="127.5" >cl..</text>
+</g>
+<g >
+<title>webrtc::AudioMixerImpl::GetAudioFromSources() (107 samples, 71.33%)</title><rect x="277.5" y="389" width="841.7" height="15.0" fill="rgb(240,127,47)" rx="2" ry="2" />
+<text  x="280.47" y="399.5" >webrtc::AudioMixerImpl::GetAudioFromSources()</text>
+</g>
+<g >
+<title>blink::WebRtcAudioRenderer::Render(base::TimeDelta, base::TimeTicks, int, media::AudioBus*) (130 samples, 86.67%)</title><rect x="159.5" y="469" width="1022.6" height="15.0" fill="rgb(232,195,34)" rx="2" ry="2" />
+<text  x="162.47" y="479.5" >blink::WebRtcAudioRenderer::Render(base::TimeDelta, base::TimeTicks, int, media::AudioBus*)</text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequence(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (16 samples, 10.67%)</title><rect x="969.7" y="277" width="125.9" height="15.0" fill="rgb(244,61,11)" rx="2" ry="2" />
+<text  x="972.73" y="287.5" >base::internal:..</text>
+</g>
+<g >
+<title>silk_decode_indices (2 samples, 1.33%)</title><rect x="623.6" y="117" width="15.7" height="15.0" fill="rgb(250,78,28)" rx="2" ry="2" />
+<text  x="626.60" y="127.5" ></text>
+</g>
+<g >
+<title>deemphasis (3 samples, 2.00%)</title><rect x="505.6" y="133" width="23.6" height="15.0" fill="rgb(223,125,53)" rx="2" ry="2" />
+<text  x="508.60" y="143.5" >d..</text>
+</g>
+<g >
+<title>quant_partition (7 samples, 4.67%)</title><rect x="537.1" y="101" width="55.0" height="15.0" fill="rgb(254,15,34)" rx="2" ry="2" />
+<text  x="540.07" y="111.5" >quant..</text>
+</g>
+<g >
+<title>base::TaskRunner::PostTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;) (19 samples, 12.67%)</title><rect x="946.1" y="309" width="149.5" height="15.0" fill="rgb(225,222,18)" rx="2" ry="2" />
+<text  x="949.13" y="319.5" >base::TaskRunner::P..</text>
+</g>
+<g >
+<title>__fcntl (4 samples, 2.67%)</title><rect x="41.5" y="453" width="31.4" height="15.0" fill="rgb(214,12,21)" rx="2" ry="2" />
+<text  x="44.47" y="463.5" >__..</text>
+</g>
+<g >
+<title>std::__Cr::__tree_node_base&lt;void*&gt;*&amp; std::__Cr::__tree&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, std::__Cr::__map_value_compare&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, std::__Cr::less&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, true&gt;, std::__Cr::allocator&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::__find_equal&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;(std::__Cr::__tree_const_iterator&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, std::__Cr::__tree_node&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, void*&gt;*, long&gt;, std::__Cr::__tree_end_node&lt;std::__Cr::__tree_node_base&lt;void*&gt;*&gt;*&amp;, std::__Cr::__tree_node_base&lt;void*&gt;*&amp;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; const&amp;) (1 samples, 0.67%)</title><rect x="875.3" y="293" width="7.9" height="15.0" fill="rgb(222,137,29)" rx="2" ry="2" />
+<text  x="878.33" y="303.5" ></text>
+</g>
+<g >
+<title>media::AudioParameters::AudioParameters(media::AudioParameters const&amp;) (1 samples, 0.67%)</title><rect x="914.7" y="309" width="7.8" height="15.0" fill="rgb(207,215,34)" rx="2" ry="2" />
+<text  x="917.67" y="319.5" ></text>
+</g>
+<g >
+<title>silk_decode_frame (8 samples, 5.33%)</title><rect x="592.1" y="133" width="63.0" height="15.0" fill="rgb(215,76,47)" rx="2" ry="2" />
+<text  x="595.13" y="143.5" >silk_d..</text>
+</g>
+<g >
+<title>alg_unquant (1 samples, 0.67%)</title><rect x="552.8" y="85" width="7.9" height="15.0" fill="rgb(222,100,1)" rx="2" ry="2" />
+<text  x="555.80" y="95.5" ></text>
+</g>
+<g >
+<title>thread_start (150 samples, 100.00%)</title><rect x="10.0" y="565" width="1180.0" height="15.0" fill="rgb(214,72,1)" rx="2" ry="2" />
+<text  x="13.00" y="575.5" >thread_start</text>
+</g>
+<g >
+<title>webrtc::NetEqImpl::DecodeLoop(std::__Cr::list&lt;webrtc::Packet, std::__Cr::allocator&lt;webrtc::Packet&gt; &gt;*, webrtc::Operations const&amp;, webrtc::AudioDecoder*, int*, webrtc::AudioDecoder::SpeechType*) (42 samples, 28.00%)</title><rect x="403.3" y="277" width="330.4" height="15.0" fill="rgb(253,107,10)" rx="2" ry="2" />
+<text  x="406.33" y="287.5" >webrtc::NetEqImpl::DecodeLoop(std::__Cr::lis..</text>
+</g>
+<g >
+<title>read (11 samples, 7.33%)</title><rect x="72.9" y="453" width="86.6" height="15.0" fill="rgb(213,227,32)" rx="2" ry="2" />
+<text  x="75.93" y="463.5" >read</text>
+</g>
+<g >
+<title>decode_pulses (2 samples, 1.33%)</title><rect x="568.5" y="53" width="15.8" height="15.0" fill="rgb(220,34,34)" rx="2" ry="2" />
+<text  x="571.53" y="63.5" ></text>
+</g>
+<g >
+<title>celt_decode_with_ec (22 samples, 14.67%)</title><rect x="419.1" y="149" width="173.0" height="15.0" fill="rgb(230,131,12)" rx="2" ry="2" />
+<text  x="422.07" y="159.5" >celt_decode_with_ec</text>
+</g>
+<g >
+<title>base::Histogram::AddCount(int, int) (1 samples, 0.67%)</title><rect x="316.8" y="357" width="7.9" height="15.0" fill="rgb(219,148,13)" rx="2" ry="2" />
+<text  x="319.80" y="367.5" ></text>
+</g>
+<g >
+<title>std::__Cr::__tree_iterator&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, std::__Cr::__tree_node&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, void*&gt;*, long&gt; std::__Cr::__tree&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, std::__Cr::__map_value_compare&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, std::__Cr::less&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, true&gt;, std::__Cr::allocator&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt; &gt; &gt;::__emplace_hint_unique_key_args&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; const, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt; const&amp;&gt;(std::__Cr::__tree_const_iterator&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, std::__Cr::__tree_node&lt;std::__Cr::__value_type&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt;, void*&gt;*, long&gt;, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; const&amp;, std::__Cr::pair&lt;std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; const, std::__Cr::basic_string&lt;char, std::__Cr::char_traits&lt;char&gt;, std::__Cr::allocator&lt;char&gt; &gt; &gt; const&amp;&amp;&amp;) (2 samples, 1.33%)</title><rect x="867.5" y="309" width="15.7" height="15.0" fill="rgb(219,172,0)" rx="2" ry="2" />
+<text  x="870.47" y="319.5" ></text>
+</g>
+<g >
+<title>blink::PeerConnectionRemoteAudioSource::OnData(void const*, int, int, unsigned long, unsigned long) (3 samples, 2.00%)</title><rect x="898.9" y="341" width="23.6" height="15.0" fill="rgb(211,219,43)" rx="2" ry="2" />
+<text  x="901.93" y="351.5" >b..</text>
+</g>
+<g >
+<title>webrtc::RtcEventLogImpl::Log(std::__Cr::unique_ptr&lt;webrtc::RtcEvent, std::__Cr::default_delete&lt;webrtc::RtcEvent&gt; &gt;) (21 samples, 14.00%)</title><rect x="938.3" y="357" width="165.2" height="15.0" fill="rgb(231,97,41)" rx="2" ry="2" />
+<text  x="941.27" y="367.5" >webrtc::RtcEventLogIm..</text>
+</g>
+<g >
+<title>silk_decode_pulses (2 samples, 1.33%)</title><rect x="639.3" y="117" width="15.8" height="15.0" fill="rgb(205,199,8)" rx="2" ry="2" />
+<text  x="642.33" y="127.5" ></text>
+</g>
+<g >
+<title>fcntl (4 samples, 2.67%)</title><rect x="41.5" y="469" width="31.4" height="15.0" fill="rgb(238,156,30)" rx="2" ry="2" />
+<text  x="44.47" y="479.5" >fc..</text>
+</g>
+<g >
+<title>free_tiny (1 samples, 0.67%)</title><rect x="718.0" y="229" width="7.9" height="15.0" fill="rgb(223,129,17)" rx="2" ry="2" />
+<text  x="721.00" y="239.5" ></text>
+</g>
+<g >
+<title>base::internal::PooledSequencedTaskRunner::PostDelayedTask(base::Location const&amp;, base::OnceCallback&lt;void ()&gt;, base::TimeDelta) (17 samples, 11.33%)</title><rect x="961.9" y="293" width="133.7" height="15.0" fill="rgb(207,84,12)" rx="2" ry="2" />
+<text  x="964.87" y="303.5" >base::internal::..</text>
+</g>
+<g >
+<title>webrtc::voe::(anonymous namespace)::ChannelReceive::PreferredSampleRate() const (1 samples, 0.67%)</title><rect x="269.6" y="373" width="7.9" height="15.0" fill="rgb(221,227,51)" rx="2" ry="2" />
+<text  x="272.60" y="383.5" ></text>
+</g>
+<g >
+<title>malloc_zone_malloc (1 samples, 0.67%)</title><rect x="324.7" y="325" width="7.8" height="15.0" fill="rgb(216,183,47)" rx="2" ry="2" />
+<text  x="327.67" y="335.5" ></text>
+</g>
+<g >
+<title>base::internal::Sequence::Transaction::PushTask(base::internal::Task) (1 samples, 0.67%)</title><rect x="1001.2" y="245" width="7.9" height="15.0" fill="rgb(246,157,38)" rx="2" ry="2" />
+<text  x="1004.20" y="255.5" ></text>
+</g>
+<g >
+<title>webrtc::RemoteAudioSource::AudioDataProxy::OnData(webrtc::AudioSinkInterface::Data const&amp;) (4 samples, 2.67%)</title><rect x="898.9" y="357" width="31.5" height="15.0" fill="rgb(226,52,12)" rx="2" ry="2" />
+<text  x="901.93" y="367.5" >we..</text>
+</g>
+<g >
+<title>&lt;Unknown Address&gt; (1 samples, 0.67%)</title><rect x="1016.9" y="229" width="7.9" height="15.0" fill="rgb(253,115,44)" rx="2" ry="2" />
+<text  x="1019.93" y="239.5" ></text>
+</g>
+<g >
+<title>operator new(unsigned long) (1 samples, 0.67%)</title><rect x="324.7" y="357" width="7.8" height="15.0" fill="rgb(224,57,20)" rx="2" ry="2" />
+<text  x="327.67" y="367.5" ></text>
+</g>
+<g >
+<title>base::ThreadCheckerImpl::CalledOnValidThread() const (2 samples, 1.33%)</title><rect x="183.1" y="437" width="15.7" height="15.0" fill="rgb(209,106,48)" rx="2" ry="2" />
+<text  x="186.07" y="447.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (2 samples, 1.33%)</title><rect x="434.8" y="133" width="15.7" height="15.0" fill="rgb(226,0,3)" rx="2" ry="2" />
+<text  x="437.80" y="143.5" ></text>
+</g>
+<g >
+<title>blink::MediaStreamAudioDeliverer&lt;blink::MediaStreamAudioTrack&gt;::OnData(media::AudioBus const&amp;, base::TimeTicks) (1 samples, 0.67%)</title><rect x="906.8" y="325" width="7.9" height="15.0" fill="rgb(217,148,29)" rx="2" ry="2" />
+<text  x="909.80" y="335.5" ></text>
+</g>
+<g >
+<title>webrtc::AudioDecoder::ConvertSpeechType(short) (1 samples, 0.67%)</title><rect x="710.1" y="213" width="7.9" height="15.0" fill="rgb(239,197,27)" rx="2" ry="2" />
+<text  x="713.13" y="223.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (2 samples, 1.33%)</title><rect x="285.3" y="309" width="15.8" height="15.0" fill="rgb(227,12,32)" rx="2" ry="2" />
+<text  x="288.33" y="319.5" ></text>
+</g>
+<g >
+<title>webrtc::Normal::Process(short const*, unsigned long, webrtc::Modes, webrtc::AudioMultiVector*) (1 samples, 0.67%)</title><rect x="812.4" y="293" width="7.9" height="15.0" fill="rgb(221,78,23)" rx="2" ry="2" />
+<text  x="815.40" y="303.5" ></text>
+</g>
+<g >
+<title>webrtc::RtcEvent::RtcEvent() (1 samples, 0.67%)</title><rect x="930.4" y="341" width="7.9" height="15.0" fill="rgb(229,25,9)" rx="2" ry="2" />
+<text  x="933.40" y="351.5" ></text>
+</g>
+<g >
+<title>webrtc::DecisionLogic::GetDecision(webrtc::SyncBuffer const&amp;, webrtc::Expand const&amp;, unsigned long, webrtc::Packet const*, webrtc::Modes, bool, unsigned long, bool*) (6 samples, 4.00%)</title><rect x="741.6" y="277" width="47.2" height="15.0" fill="rgb(236,53,38)" rx="2" ry="2" />
+<text  x="744.60" y="287.5" >webr..</text>
+</g>
+<g >
+<title>_pthread_start (150 samples, 100.00%)</title><rect x="10.0" y="549" width="1180.0" height="15.0" fill="rgb(229,80,4)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" >_pthread_start</text>
+</g>
+<g >
+<title>base::internal::IntrusiveHeap&lt;base::internal::PriorityQueue::TaskSourceAndSortKey&gt;::FillHole(unsigned long, base::internal::PriorityQueue::TaskSourceAndSortKey&amp;&amp;) (1 samples, 0.67%)</title><rect x="1024.8" y="181" width="7.9" height="15.0" fill="rgb(205,144,32)" rx="2" ry="2" />
+<text  x="1027.80" y="191.5" ></text>
+</g>
+<g >
+<title>exp_rotation (1 samples, 0.67%)</title><rect x="584.3" y="53" width="7.8" height="15.0" fill="rgb(207,207,26)" rx="2" ry="2" />
+<text  x="587.27" y="63.5" ></text>
+</g>
+<g >
+<title>_platform_memmove$VARIANT$Haswell (1 samples, 0.67%)</title><rect x="592.1" y="117" width="7.9" height="15.0" fill="rgb(239,3,19)" rx="2" ry="2" />
+<text  x="595.13" y="127.5" ></text>
+</g>
+<g >
+<title>ec_dec_icdf (1 samples, 0.67%)</title><rect x="631.5" y="101" width="7.8" height="15.0" fill="rgb(245,54,37)" rx="2" ry="2" />
+<text  x="634.47" y="111.5" ></text>
+</g>
+<g >
+<title>compute_allocation (2 samples, 1.33%)</title><rect x="489.9" y="133" width="15.7" height="15.0" fill="rgb(205,6,44)" rx="2" ry="2" />
+<text  x="492.87" y="143.5" ></text>
+</g>
+<g >
+<title>write (3 samples, 2.00%)</title><rect x="17.9" y="437" width="23.6" height="15.0" fill="rgb(238,123,3)" rx="2" ry="2" />
+<text  x="20.87" y="447.5" >w..</text>
+</g>
+<g >
+<title>opus_decode_native (37 samples, 24.67%)</title><rect x="419.1" y="181" width="291.0" height="15.0" fill="rgb(240,194,46)" rx="2" ry="2" />
+<text  x="422.07" y="191.5" >opus_decode_native</text>
+</g>
+<g >
+<title>webrtc::PushResampler&lt;short&gt;::InitializeIfNeeded(int, int, unsigned long) (1 samples, 0.67%)</title><rect x="1158.5" y="405" width="7.9" height="15.0" fill="rgb(249,167,4)" rx="2" ry="2" />
+<text  x="1161.53" y="415.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (1 samples, 0.67%)</title><rect x="324.7" y="309" width="7.8" height="15.0" fill="rgb(251,147,6)" rx="2" ry="2" />
+<text  x="327.67" y="319.5" ></text>
+</g>
+<g >
+<title>webrtc::SdpAudioFormat::SdpAudioFormat(webrtc::SdpAudioFormat const&amp;) (4 samples, 2.67%)</title><rect x="859.6" y="325" width="31.5" height="15.0" fill="rgb(217,52,28)" rx="2" ry="2" />
+<text  x="862.60" y="335.5" >we..</text>
+</g>
+<g >
+<title>webrtc::DecoderDatabase::IsComfortNoise(unsigned char) const (1 samples, 0.67%)</title><rect x="773.1" y="261" width="7.8" height="15.0" fill="rgb(234,211,3)" rx="2" ry="2" />
+<text  x="776.07" y="271.5" ></text>
+</g>
+<g >
+<title>celt_synthesis (5 samples, 3.33%)</title><rect x="450.5" y="133" width="39.4" height="15.0" fill="rgb(205,217,47)" rx="2" ry="2" />
+<text  x="453.53" y="143.5" >cel..</text>
+</g>
+<g >
+<title>base::WriteFileDescriptor(int, char const*, int) (3 samples, 2.00%)</title><rect x="17.9" y="453" width="23.6" height="15.0" fill="rgb(243,186,43)" rx="2" ry="2" />
+<text  x="20.87" y="463.5" >b..</text>
+</g>
+<g >
+<title>base::internal::ThreadPoolImpl::PostTaskWithSequenceNow(base::internal::Task, scoped_refptr&lt;base::internal::Sequence&gt;) (16 samples, 10.67%)</title><rect x="969.7" y="261" width="125.9" height="15.0" fill="rgb(230,134,43)" rx="2" ry="2" />
+<text  x="972.73" y="271.5" >base::internal:..</text>
+</g>
+<g >
+<title>cos (1 samples, 0.67%)</title><rect x="584.3" y="37" width="7.8" height="15.0" fill="rgb(209,14,50)" rx="2" ry="2" />
+<text  x="587.27" y="47.5" ></text>
+</g>
+<g >
+<title>base::SyncSocket::Receive(void*, unsigned long) (11 samples, 7.33%)</title><rect x="72.9" y="485" width="86.6" height="15.0" fill="rgb(212,108,5)" rx="2" ry="2" />
+<text  x="75.93" y="495.5" >base::Sync..</text>
+</g>
+<g >
+<title>webrtc::AudioMultiVector::Clear() (2 samples, 1.33%)</title><rect x="371.9" y="293" width="15.7" height="15.0" fill="rgb(229,70,21)" rx="2" ry="2" />
+<text  x="374.87" y="303.5" ></text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::ScopedWorkersExecutor::~ScopedWorkersExecutor() (3 samples, 2.00%)</title><rect x="1072.0" y="229" width="23.6" height="15.0" fill="rgb(239,179,44)" rx="2" ry="2" />
+<text  x="1075.00" y="239.5" >b..</text>
+</g>
+<g >
+<title>WebRtcSpl_MaxAbsValueW16C (1 samples, 0.67%)</title><rect x="1111.3" y="341" width="7.9" height="15.0" fill="rgb(215,145,21)" rx="2" ry="2" />
+<text  x="1114.33" y="351.5" ></text>
+</g>
+<g >
+<title>_pthread_body (150 samples, 100.00%)</title><rect x="10.0" y="533" width="1180.0" height="15.0" fill="rgb(220,216,52)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" >_pthread_body</text>
+</g>
+<g >
+<title>base::internal::ThreadGroupImpl::EnsureEnoughWorkersLockRequired(base::internal::ThreadGroup::BaseScopedWorkersExecutor*) (4 samples, 2.67%)</title><rect x="1040.5" y="213" width="31.5" height="15.0" fill="rgb(227,103,3)" rx="2" ry="2" />
+<text  x="1043.53" y="223.5" >ba..</text>
+</g>
+<g >
+<title>webrtc::DecoderDatabase::GetDecoderInfo(unsigned char) const (1 samples, 0.67%)</title><rect x="773.1" y="245" width="7.8" height="15.0" fill="rgb(220,213,27)" rx="2" ry="2" />
+<text  x="776.07" y="255.5" ></text>
+</g>
+<g >
+<title>blink::MediaStreamAudioDeliverer&lt;blink::WebMediaStreamAudioSink&gt;::OnData(media::AudioBus const&amp;, base::TimeTicks) (1 samples, 0.67%)</title><rect x="906.8" y="309" width="7.9" height="15.0" fill="rgb(217,54,36)" rx="2" ry="2" />
+<text  x="909.80" y="319.5" ></text>
+</g>
+<g >
+<title>free (1 samples, 0.67%)</title><rect x="788.8" y="245" width="7.9" height="15.0" fill="rgb(226,123,32)" rx="2" ry="2" />
+<text  x="791.80" y="255.5" ></text>
+</g>
+<g >
+<title>webrtc::DelayManager::BufferLimits(int*, int*) const (1 samples, 0.67%)</title><rect x="780.9" y="261" width="7.9" height="15.0" fill="rgb(217,150,37)" rx="2" ry="2" />
+<text  x="783.93" y="271.5" ></text>
+</g>
+<g >
+<title>media::AudioOutputDevice::CurrentThreadIsRenderingThread() (2 samples, 1.33%)</title><rect x="1166.4" y="453" width="15.7" height="15.0" fill="rgb(228,23,17)" rx="2" ry="2" />
+<text  x="1169.40" y="463.5" ></text>
+</g>
+<g >
+<title>base::allocator::MallocZoneFunctionsToReplaceDefault()::$_1::__invoke(_malloc_zone_t*, unsigned long) (2 samples, 1.33%)</title><rect x="285.3" y="325" width="15.8" height="15.0" fill="rgb(253,18,33)" rx="2" ry="2" />
+<text  x="288.33" y="335.5" ></text>
+</g>
+<g >
+<title>webrtc::acm2::AcmReceiver::GetAudio(int, webrtc::AudioFrame*, bool*) (66 samples, 44.00%)</title><rect x="340.4" y="341" width="519.2" height="15.0" fill="rgb(210,126,49)" rx="2" ry="2" />
+<text  x="343.40" y="351.5" >webrtc::acm2::AcmReceiver::GetAudio(int, webrtc::AudioFrame*, bool*)</text>
+</g>
+<g >
+<title>ec_dec_icdf (1 samples, 0.67%)</title><rect x="647.2" y="85" width="7.9" height="15.0" fill="rgb(254,155,8)" rx="2" ry="2" />
+<text  x="650.20" y="95.5" ></text>
+</g>
+<g >
+<title>mach_msg (3 samples, 2.00%)</title><rect x="1072.0" y="165" width="23.6" height="15.0" fill="rgb(217,94,14)" rx="2" ry="2" />
+<text  x="1075.00" y="175.5" >m..</text>
+</g>
+<g >
+<title>base::internal::RegisteredTaskSource::~RegisteredTaskSource() (1 samples, 0.67%)</title><rect x="977.6" y="245" width="7.9" height="15.0" fill="rgb(221,105,37)" rx="2" ry="2" />
+<text  x="980.60" y="255.5" ></text>
+</g>
+<g >
+<title>base::WaitableEvent::Signal() (3 samples, 2.00%)</title><rect x="1072.0" y="181" width="23.6" height="15.0" fill="rgb(253,157,41)" rx="2" ry="2" />
+<text  x="1075.00" y="191.5" >b..</text>
+</g>
+<g >
+<title>WebRtcOpus_Decode (39 samples, 26.00%)</title><rect x="403.3" y="213" width="306.8" height="15.0" fill="rgb(247,138,20)" rx="2" ry="2" />
+<text  x="406.33" y="223.5" >WebRtcOpus_Decode</text>
+</g>
+<g >
+<title>opus_decode (39 samples, 26.00%)</title><rect x="403.3" y="197" width="306.8" height="15.0" fill="rgb(230,178,30)" rx="2" ry="2" />
+<text  x="406.33" y="207.5" >opus_decode</text>
+</g>
+<g >
+<title>base::internal::ThreadGroup::PushTaskSourceAndWakeUpWorkersImpl(base::internal::ThreadGroup::BaseScopedWorkersExecutor*, base::internal::BasicTransactionWithTaskSource&lt;base::internal::RegisteredTaskSource&gt;) (6 samples, 4.00%)</title><rect x="1024.8" y="229" width="47.2" height="15.0" fill="rgb(217,136,33)" rx="2" ry="2" />
+<text  x="1027.80" y="239.5" >base..</text>
+</g>
+<g >
+<title>webrtc::SyncBuffer::FutureLength() const (2 samples, 1.33%)</title><rect x="796.7" y="277" width="15.7" height="15.0" fill="rgb(233,145,29)" rx="2" ry="2" />
+<text  x="799.67" y="287.5" ></text>
+</g>
+<g >
+<title>mach_msg_trap (2 samples, 1.33%)</title><rect x="1079.9" y="149" width="15.7" height="15.0" fill="rgb(237,35,36)" rx="2" ry="2" />
+<text  x="1082.87" y="159.5" ></text>
+</g>
+<g >
+<title>silk_resampler_private_up2_HQ (1 samples, 0.67%)</title><rect x="694.4" y="101" width="7.9" height="15.0" fill="rgb(238,145,27)" rx="2" ry="2" />
+<text  x="697.40" y="111.5" ></text>
+</g>
+<g >
+<title>webrtc::BufferLevelFilter::SetTargetBufferLevel(int) (1 samples, 0.67%)</title><rect x="765.2" y="245" width="7.9" height="15.0" fill="rgb(209,96,36)" rx="2" ry="2" />
+<text  x="768.20" y="255.5" ></text>
+</g>
+<g >
+<title>base::internal::Sequence::BeginTransaction() (2 samples, 1.33%)</title><rect x="985.5" y="245" width="15.7" height="15.0" fill="rgb(217,70,6)" rx="2" ry="2" />
+<text  x="988.47" y="255.5" ></text>
+</g>
+<g >
+<title>base::(anonymous namespace)::SendHelper(int, void const*, unsigned long) (3 samples, 2.00%)</title><rect x="17.9" y="469" width="23.6" height="15.0" fill="rgb(211,156,28)" rx="2" ry="2" />
+<text  x="20.87" y="479.5" >b..</text>
+</g>
+</g>
+</svg>
